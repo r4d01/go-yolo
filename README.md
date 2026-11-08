@@ -214,9 +214,16 @@ What every project gets:
 | item | what | how |
 |------|------|-----|
 | `base` | the shared base image (OS, agents, entrypoint) | `FROM go-yolo-base:<distro>-<codename>-<hash>` |
+| `parity` | base image packages whose version differs from the host's: a warning only | the base installs the archive's current versions; `apt upgrade` the host, or `--rebuild` the base, to match |
 | `cert` | the host's extra CA certificates (`/usr/local/share/ca-certificates`) | copied to the same path, `update-ca-certificates` |
 | `env` | `TZ` (the host's time zone), proxy variables (`HTTP_PROXY`, `https_proxy`, `NO_PROXY`, ...) | passed by name with `docker run -e NAME`, never baked into the image |
 | `package` | `extra package` items from `.go-yolo/config` | `apt-get install name=version` |
+
+The base image's own packages (git, gcc, libc6, ...) come from the archive when the base is
+built, so they can differ from the host's: each difference is a `parity` warning. Until the
+base image exists there is nothing to compare; on the first run go-yolo builds it after you
+confirm the plan, then shows the differences as a change to confirm before the project image is
+built. The base image's package list is cached in `~/.cache/go-yolo/`.
 
 Packages get the **host's version**, so the container matches the host. The image never
 downgrades a package: if the host is behind the archive, the image gets the archive's newer

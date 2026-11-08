@@ -7,8 +7,8 @@ trap 'rm -rf -- "$TEST_DIR"' EXIT
 TEST_HOME="$TEST_DIR/home"
 mkdir -p "$TEST_DIR/bin" "$TEST_HOME"/{bin,project/nested/deeper,go/pkg/mod,cache,toolchain,links,.gradle,.m2} \
   "$TEST_DIR/jdk/bin" "$TEST_DIR/java-config" "$TEST_HOME/with spaces"
-cp "$REPO_DIR/tests/fixtures/"{go,docker,apt-cache} "$TEST_DIR/bin/"
-chmod +x "$TEST_DIR/bin/"{go,docker,apt-cache}
+cp "$REPO_DIR/tests/fixtures/"{go,docker,apt-cache,dpkg-query} "$TEST_DIR/bin/"
+chmod +x "$TEST_DIR/bin/"{go,docker,apt-cache,dpkg-query}
 mkdir -p "$TEST_DIR/ca/corp"
 printf 'not really a certificate\n' >"$TEST_DIR/ca/corp/root.crt"
 cp "$REPO_DIR/tests/fixtures/go" "$TEST_DIR/jdk/bin/java"
@@ -36,6 +36,7 @@ launch() (
     GOMODCACHE="${TEST_GOMODCACHE-$TEST_HOME/go/pkg/mod}" GOENV=off \
     DOCKER_TEST_LOG="$TEST_DIR/docker.log" DOCKER_TEST_IMAGE_STATUS="${TEST_IMAGE_STATUS-0}" \
     TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$REPO_DIR/tests/fixtures/apt-policy" \
+    DPKG_HOST_FIXTURE="${TEST_DPKG_HOST-}" DPKG_BASE_FIXTURE="$REPO_DIR/tests/fixtures/dpkg-base" \
     "${TEST_ENV[@]}" "$REPO_DIR/go-yolo.sh" "$@"
 )
 TEST_ENV=()   # extra VAR=value settings for launch
@@ -348,6 +349,30 @@ printf 'extra thing x\n' >"$CONFIG"
 rm -f "$CONFIG" "$STATE/plan"
 TEST_ENV=()
 pass '.go-yolo/config errors name the file and line'
+
+# Base image packages vs the host: zlib1g is older on the host, tzdata newer; libc6 is the
+# same, tini isn't on the host, "removed" was removed from the host (status rc).
+TEST_DPKG_HOST="$REPO_DIR/tests/fixtures/dpkg-host"
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan 'parity   zlib1g=1:1.3-1+deb13u1  ⚠ the base image has this newer version, the host has 1:1.3-1 (apt upgrade the host to match)'
+expect_plan 'parity   tzdata=2026e-1  ⚠ the base image has this older version, the host has 2026f-1 (go-yolo.sh --rebuild updates the base image)'
+for name in libc6 tini removed only-on-host; do
+  [[ $plan_text != *"parity   $name="* ]] || fail "parity warning for $name"
+done
+pass 'base image packages whose version differs from the host are warnings in the plan'
+
+# First run: the base image doesn't exist yet, so the comparison comes after it is built, as a
+# change to the plan that is confirmed before the project image is built.
+rm -f "$STATE/plan" "$TEST_DIR/docker.log.built"
+cp /dev/null "$TEST_DIR/docker.log"
+output="$(TEST_IMAGE_STATUS=built-on-build launch --yes shell 2>&1 >/dev/null)"
+[[ $output == *'plan for '*'(new;'* ]] || fail "first run did not show the new plan: $output"
+[[ $output == *'+ parity   zlib1g=1:1.3-1+deb13u1'* ]] || fail "the base comparison was not shown as a change: $output"
+grep -q '^parity	host	check	zlib1g	' "$STATE/plan" || fail 'the confirmed plan lacks the base comparison'
+[[ $(grep -c '^build$' "$TEST_DIR/docker.log") == 2 ]] || fail 'expected a base and a project build'
+rm -f "$TEST_DIR/docker.log.built" "$STATE/plan"
+TEST_DPKG_HOST=""
+pass 'on a first run the base comparison is confirmed before the project image is built'
 
 # The prompt needs a terminal; script(1) provides one and feeds it our answers.
 if command -v script >/dev/null 2>&1; then

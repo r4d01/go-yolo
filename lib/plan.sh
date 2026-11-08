@@ -8,12 +8,14 @@
 #   base     host   image   go-yolo-base:debian-trixie-3f2a91c0  -     -
 #   package  host   apt     libsqlite3-dev             3.46.1-2       -
 #   package  extra  apt     protobuf-compiler          3.21.12-11     not-on-host
+#   parity   host   check   zlib1g                     1:1.3-1+deb13u1  host-behind=1:1.3-1
 #   cert     host   copy    /usr/local/share/ca-certificates/corp.crt  1a2b3c4d  -
 #   env      host   env     TZ                         Europe/Prague  -
 #   env      extra  env     GITHUB_TOKEN               sha256:5e6f..  hidden
 #   env      host   skip    HTTPS_PROXY                -              secret
 #
-#   kind    base, package, cert: built into the image; env: passed when the container starts
+#   kind    base, package, cert: built into the image; env: passed when the container starts;
+#           parity: a base image package whose version differs from the host's (a warning)
 #   group   who asks for it: host (every project), extra (.go-yolo/config); later go, rust, ...
 #   method  how: image, apt, copy, env; or skip: shown so you see it, but left out
 #   value   a version, a content hash or an env value ("-" when there is none)
@@ -185,7 +187,7 @@ plan_finish() {
   local ranked=()
   for line in "${PLAN[@]}"; do
     kind=${line%%$'\t'*}
-    case $kind in base) rank=1 ;; package) rank=2 ;; cert) rank=3 ;; *) rank=9 ;; esac
+    case $kind in base) rank=1 ;; package) rank=2 ;; parity) rank=3 ;; cert) rank=4 ;; *) rank=9 ;; esac
     ranked+=("$rank"$'\t'"$line")
   done
   mapfile -t PLAN < <(printf '%s\n' "${ranked[@]}" | LC_ALL=C sort -t $'\t' -k1,1n -k5,5 | cut -f2-)
@@ -254,6 +256,8 @@ plan_note() {
     hidden) printf 'value not shown' ;;
     empty) printf 'empty value' ;;
     not-set) printf 'not passed: not set on the host' ;;
+    host-behind=*) printf "⚠ the base image has this newer version, the host has %s (apt upgrade the host to match)" "${1#host-behind=}" ;;
+    host-ahead=*) printf "⚠ the base image has this older version, the host has %s (go-yolo.sh --rebuild updates the base image)" "${1#host-ahead=}" ;;
     host-older=*) printf "⚠ the host has %s, an older version: the image gets the archive's version (apt upgrade the host to match)" "${1#host-older=}" ;;
     not-on-host) printf '⚠ not installed on the host: a build that needs it works here but fails on the host' ;;
     not-in-archive) printf "⚠ not installed: the host's version isn't in the %s archive (third-party repository, or apt upgrade the host)" "$HOST_ID" ;;
@@ -269,7 +273,7 @@ plan_row() {
   local flag_list=()
   IFS=$'\t' read -r kind group method name value flags <<<"$2"
   case $kind in
-    package) text="$name${value:+=$value}"; text=${text%=-} ;;
+    package|parity) text="$name${value:+=$value}"; text=${text%=-} ;;
     env) if [[ $value == - || $value == sha256:* ]]; then text=$name; else text="$name=$value"; fi ;;
     *) text=$name ;;
   esac

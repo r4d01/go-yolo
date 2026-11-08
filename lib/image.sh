@@ -36,6 +36,24 @@ choose_project_image() {
   IMAGE="go-yolo:${name}-${path_hash}-${PLAN_HASH}"
 }
 
+# Print the base image's installed packages, one "name<TAB>version" per line; nothing if the
+# base image doesn't exist yet. Cached per image ID (a rebuild gets a new ID).
+base_packages() {
+  local id cache
+  command -v docker >/dev/null 2>&1 || return 0
+  id="$(docker image inspect -f '{{.Id}}' "$BASE_TAG" 2>/dev/null)" || return 0
+  [[ -n $id ]] || return 0
+  cache="${XDG_CACHE_HOME:-$HOME_DIR/.cache}/go-yolo/base-packages-${id#sha256:}"
+  if [[ ! -f $cache ]]; then
+    mkdir -p -- "${cache%/*}"
+    docker run --rm --entrypoint dpkg-query "$BASE_TAG" \
+      -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\n' \
+      | awk -F'\t' '$1 ~ /^ii/ { print $2 "\t" $3 }' >"$cache.tmp"
+    mv -- "$cache.tmp" "$cache"
+  fi
+  cat -- "$cache"
+}
+
 # Build the base image unless it exists already (or --rebuild was given).
 ensure_base_image() {
   command -v docker >/dev/null 2>&1 || die "docker not found on PATH"

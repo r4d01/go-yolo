@@ -4,4 +4,24 @@ set -euo pipefail
   printf 'CALL\n'
   printf '%q\n' "$@"
 } >>"$DOCKER_TEST_LOG"
-if [[ $* == image\ inspect\ * ]]; then exit "${DOCKER_TEST_IMAGE_STATUS:-0}"; fi
+# DOCKER_TEST_IMAGE_STATUS: 0 = every image exists, 1 = none does,
+# built-on-build = only the images (-t tags) that a `docker build` has built.
+if [[ $1 == build ]]; then
+  args=("$@")
+  for ((i = 0; i < ${#args[@]} - 1; i++)); do
+    if [[ ${args[i]} == -t ]]; then printf '%s\n' "${args[i + 1]}" >>"$DOCKER_TEST_LOG.built"; fi
+  done
+fi
+if [[ $* == image\ inspect\ * ]]; then
+  status=${DOCKER_TEST_IMAGE_STATUS:-0}
+  if [[ $status == built-on-build ]]; then
+    status=1
+    if grep -qxF -- "${!#}" "$DOCKER_TEST_LOG.built" 2>/dev/null; then status=0; fi
+  fi
+  if ((status == 0)) && [[ $* == *'{{.Id}}'* ]]; then printf 'sha256:%s\n' "${DOCKER_TEST_IMAGE_ID:-0123abcd}"; fi
+  exit "$status"
+fi
+# The base image's package list, read by `docker run --rm --entrypoint dpkg-query IMAGE ...`.
+if [[ $* == run\ --rm\ --entrypoint\ dpkg-query\ * ]]; then
+  if [[ -n ${DPKG_BASE_FIXTURE:-} ]]; then cat "$DPKG_BASE_FIXTURE"; fi
+fi

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub dpkg-query for `dpkg-query -W -f=...`: the host's packages from $DPKG_HOST_FIXTURE.
+set -euo pipefail
+if [[ -n ${DPKG_HOST_FIXTURE:-} ]]; then cat "$DPKG_HOST_FIXTURE"; fi

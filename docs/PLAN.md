@@ -288,7 +288,9 @@ checks), and `--dry-run` output is identical to before for the test fixtures.
 Done so far: `.go-yolo/` and the project checks; the plan with diff, confirmation (prompt,
 `--yes`, refusal without a terminal) and `$EDITOR` editing; `.go-yolo/config`; base image
 `go-yolo-base:…` and the generated project image; packages (rule 4), CAs, time zone, proxies,
-extra env. Still to do: fzf editing, `--parity`, `--prune`, the agent picker. Named contexts and
+extra env; `parity` warnings for base image packages whose version differs from the host's
+(the base is built after the first confirmation, then the plan is resolved and confirmed again
+before the project image). Still to do: fzf editing, `--parity`, `--prune`, the agent picker. Named contexts and
 ownership (`--chown`) come with the first pack that copies a toolchain (phase 1).
 
 - `lib/project.sh`: git-root check (D9), `.go-yolo/` creation and checks (3.5), tmpfs cover,

@@ -57,6 +57,13 @@ add_agent_mounts
 
 resolve_plan               # what goes into the project image and the container
 confirm_plan               # shows a new or changed plan and asks
+if ((!DRY_RUN)); then
+  ensure_base_image
+  # Once the base image exists, its package versions can be compared with the host's; any
+  # difference shows up as a change to confirm before the project image is built.
+  resolve_plan
+  confirm_plan
+fi
 choose_project_image
 
 set_network_args
@@ -69,7 +76,6 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-ensure_base_image
 ensure_project_image
 print_banner
 exec "${CMD[@]}"
