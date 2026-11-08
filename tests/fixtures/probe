@@ -3,6 +3,9 @@ set -euo pipefail
 [[ $(/usr/bin/id -u) == "$GOYOLO_UID" && $(/usr/bin/id -g) == "$GOYOLO_GID" ]]
 [[ $PATH == /home/goyolo-test/tools/bin:/home/goyolo-test/toolchain/bin:/home/goyolo-test/go/bin:* ]]
 [[ ! -e /home/goyolo-test/root-shadow ]]
+# The host's umask is applied; a locale the image lacks is dropped, an existing one kept.
+[[ $(umask) == 0007 ]]
+[[ -z ${LC_TIME+set} && $LANG == C.UTF-8 ]]
 for status in /proc/self/status /proc/1/status; do
   /usr/bin/awk '
     /^Cap(Eff|Prm|Bnd):/ { if ($2 !~ /^0+$/) exit 1; caps++ }

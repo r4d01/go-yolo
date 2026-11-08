@@ -10,11 +10,12 @@
 #   package  extra  apt     protobuf-compiler          3.21.12-11     not-on-host
 #   parity   host   check   zlib1g                     1:1.3-1+deb13u1  host-behind=1:1.3-1
 #   cert     host   copy    /usr/local/share/ca-certificates/corp.crt  1a2b3c4d  -
+#   locale   host   generate  en_US.UTF-8              UTF-8          -
 #   env      host   env     TZ                         Europe/Prague  -
 #   env      extra  env     GITHUB_TOKEN               sha256:5e6f..  hidden
 #   env      host   skip    HTTPS_PROXY                -              secret
 #
-#   kind    base, package, cert: built into the image; env: passed when the container starts;
+#   kind    base, package, cert, locale: built into the image; env: passed when the container starts;
 #           parity: a base image package whose version differs from the host's (a warning)
 #   group   who asks for it: host (every project), extra (.go-yolo/config); later go, rust, ...
 #   method  how: image, apt, copy, env; or skip: shown so you see it, but left out
@@ -142,6 +143,31 @@ plan_cert() {
   plan_add cert host copy "$path" "$(sha256sum <"$path" | cut -c1-8)"
 }
 
+# plan_locale NAME — generate locale NAME (e.g. en_US.UTF-8) in the image. Its character map
+# comes from the host's list of supported locales; the `locales` package must be in the plan.
+plan_locale() {
+  local name=$1 charmap
+  if config_has exclude locale "$name"; then
+    plan_add locale host skip "$name" - excluded
+  elif ! plan_items package apt | grep -qxF locales; then
+    plan_add locale host skip "$name" - no-locales-package
+  elif charmap="$(locale_charmap "$name")"; then
+    plan_add locale host generate "$name" "$charmap"
+  else
+    plan_add locale host skip "$name" - unsupported-locale
+  fi
+}
+
+# locale_charmap NAME — print the character map of locale NAME from the host's list of supported
+# locales (lines like "en_US.UTF-8 UTF-8"). Names are compared like glibc does: case and "-"
+# in the code set don't matter, so en_US.utf8 finds en_US.UTF-8.
+locale_charmap() {
+  awk -v want="$1" '
+    function normal(name) { name = tolower(name); gsub("-", "", name); return name }
+    normal($1) == normal(want) { print $2; found = 1; exit }
+    END { exit !found }' "${GOYOLO_LOCALES_SUPPORTED:-/usr/share/i18n/SUPPORTED}" 2>/dev/null
+}
+
 # True if an env variable looks like it holds a secret: by its name, or a URL with a password.
 looks_secret() {
   local name=${1^^} value=$2
@@ -187,7 +213,7 @@ plan_finish() {
   local ranked=()
   for line in "${PLAN[@]}"; do
     kind=${line%%$'\t'*}
-    case $kind in base) rank=1 ;; package) rank=2 ;; parity) rank=3 ;; cert) rank=4 ;; *) rank=9 ;; esac
+    case $kind in base) rank=1 ;; package) rank=2 ;; parity) rank=3 ;; cert) rank=4 ;; locale) rank=5 ;; *) rank=9 ;; esac
     ranked+=("$rank"$'\t'"$line")
   done
   mapfile -t PLAN < <(printf '%s\n' "${ranked[@]}" | LC_ALL=C sort -t $'\t' -k1,1n -k5,5 | cut -f2-)
@@ -217,7 +243,7 @@ confirmed_plan_hash() {
 is_build_line() {
   local kind group method rest
   IFS=$'\t' read -r kind group method rest <<<"$1"
-  [[ $method != skip ]] && case $kind in base|package|cert) true ;; *) false ;; esac
+  [[ $method != skip ]] && case $kind in base|package|cert|locale) true ;; *) false ;; esac
 }
 
 # Load .go-yolo/config and let every pack add its items.
@@ -277,6 +303,8 @@ plan_note() {
     not-on-host) printf '⚠ not installed on the host: a build that needs it works here but fails on the host' ;;
     not-in-archive) printf "⚠ not installed: the host's version isn't in the %s archive (third-party repository, or apt upgrade the host)" "$HOST_ID" ;;
     not-found) printf '⚠ no such apt package' ;;
+    no-locales-package) printf "⚠ not generated: the locales package isn't in the plan" ;;
+    unsupported-locale) printf "⚠ not generated: not in the host's list of supported locales" ;;
     *) printf '%s' "$1" ;;
   esac
 }

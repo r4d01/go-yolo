@@ -219,6 +219,7 @@ What every project gets:
 | `base` | the shared base image (OS, agents, entrypoint) | `FROM go-yolo-base:<distro>-<codename>-<hash>` |
 | `parity` | base image packages whose version differs from the host's: a warning only | the base installs the archive's current versions; `apt upgrade` the host, or `--rebuild` the base, to match |
 | `cert` | the host's extra CA certificates (`/usr/local/share/ca-certificates`) | copied to the same path, `update-ca-certificates` |
+| `locale` | the locales of `LANG`, `LC_ALL` and `LC_*` (C and POSIX are built in), plus the `locales` package | `localedef` in the image, as `locale-gen` would; a locale the host doesn't support is left out with a warning |
 | `env` | `TZ` (the host's time zone), proxy variables (`HTTP_PROXY`, `https_proxy`, `NO_PROXY`, ...) | passed by name with `docker run -e NAME`, never baked into the image |
 | `package` | `extra package` items from `.go-yolo/config` | `apt-get install name=version` |
 
@@ -246,6 +247,7 @@ extra    package  protobuf-compiler    # also install this apt package
 extra    env      GITHUB_TOKEN         # also pass this host variable
 exclude  package  libx11-dev           # leave out an item the plan would include
 exclude  cert     /usr/local/share/ca-certificates/old.crt
+exclude  locale   cs_CZ.UTF-8
 exclude  env      HTTPS_PROXY
 ```
 
@@ -352,8 +354,11 @@ The mount safety checks above also apply here. Explicit mounts are added before 
 ones, so `--mount ~/.m2:ro` makes the Maven cache read-only. `GOYOLO_MOUNTS` can't hold paths with spaces; use
 `--mount` for those.
 
-Your UID, GID, username and `$HOME` path are the same as on the host, so files the agent creates
-belong to you.
+Your UID, GID, username, `$HOME` path and umask are the same as on the host, so files the agent
+creates belong to you and get the same permissions. `LANG`, `LANGUAGE`, `LC_ALL` and `LC_*` are
+passed too; their locales are generated in the project image (see [The plan](#the-plan)). If one
+is missing anyway (an excluded plan item), `LANG` falls back to `C.UTF-8` and an `LC_*` variable
+is dropped.
 
 ### Host toolchains
 

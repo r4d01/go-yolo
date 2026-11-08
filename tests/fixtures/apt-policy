@@ -34,3 +34,10 @@ libbpo-dev:
  *** 5.0-1~bpo13+1 100
         100 http://deb.debian.org/debian trixie-backports/main amd64 Packages
         100 /var/lib/dpkg/status
+locales:
+  Installed: 2.41-12
+  Candidate: 2.41-12
+  Version table:
+ *** 2.41-12 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status

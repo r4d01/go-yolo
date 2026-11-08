@@ -20,6 +20,7 @@ for var in GOYOLO_UID GOYOLO_GID GOYOLO_USER GOYOLO_HOME GOYOLO_AGENT GOYOLO_NET
 done
 # shellcheck disable=SC2153 # set by the launcher
 [[ $GOYOLO_UID =~ ^[0-9]+$ && $GOYOLO_GID =~ ^[0-9]+$ ]] || die "GOYOLO_UID/GOYOLO_GID must be numeric"
+[[ ${GOYOLO_UMASK:-0022} =~ ^0?[0-7]{3}$ ]] || die "invalid GOYOLO_UMASK '$GOYOLO_UMASK'"
 ((GOYOLO_UID != 0 && GOYOLO_GID != 0)) || die "refusing to run the agent as root (UID/GID 0)"
 [[ $GOYOLO_USER =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || die "invalid GOYOLO_USER '$GOYOLO_USER'"
 [[ $GOYOLO_HOME == /?* && $GOYOLO_HOME != *$'\n'* ]] || die "invalid GOYOLO_HOME '$GOYOLO_HOME'"
@@ -137,13 +138,22 @@ unset GOYOLO_TOOL_PATH
 # Login shells reset PATH in /etc/profile; restore ours afterwards.
 printf 'export PATH=%q\n' "$AGENT_PATH" >/etc/profile.d/zz-go-yolo.sh
 
-# The host's locale may not exist in the image; fall back to C.UTF-8.
-if [[ -n ${LANG:-} ]]; then
-  wanted="${LANG,,}"
-  if ! locale -a 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d - | grep -qxF -- "${wanted//-/}"; then
+# The host's locales are generated in the project image, unless the plan left one out. Then
+# LANG falls back to C.UTF-8 and an LC_* variable is dropped, so programs don't complain.
+# Locale names are compared like glibc does: case and "-" don't matter (en_US.UTF-8 = en_US.utf8).
+available_locales="$(locale -a 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d -)"
+for var in LANG LC_ALL LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES LC_PAPER \
+           LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION; do
+  wanted=${!var:-}
+  [[ -n $wanted ]] || continue
+  wanted=${wanted,,}
+  if grep -qxF -- "${wanted//-/}" <<<"$available_locales"; then continue; fi
+  if [[ $var == LANG ]]; then
     export LANG=C.UTF-8
+  else
+    unset "$var"
   fi
-fi
+done
 
 # Install the host's terminfo entry if the image lacks one for $TERM; failing that, fall
 # back to a generic entry (tmux won't start with an unknown terminal).
@@ -230,6 +240,10 @@ if ((USE_TMUX)); then
   done
   cmd=(tmux -f "$GOYOLO_DIR/tmux/tmux.conf" new-session -s go-yolo -n "$GOYOLO_AGENT" -- "${tmux_cmd[@]}")
 fi
+
+# The host user's umask, so files get the same permissions as on the host. Set only now: the
+# root steps above keep the default.
+umask "${GOYOLO_UMASK:-0022}"
 
 # tini runs as PID 1 *after* the privilege drop (instead of docker run --init), so no
 # process in the container keeps root or NET_ADMIN.

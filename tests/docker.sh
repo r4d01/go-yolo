@@ -35,6 +35,7 @@ for scenario in none:vibe none:shell allowlist:shell; do
     -e GOYOLO_UID="$TEST_UID" -e GOYOLO_GID="$TEST_GID" \
     -e GOYOLO_USER=goyolotest -e GOYOLO_HOME=/home/goyolo-test \
     -e GOYOLO_AGENT="$agent" -e GOYOLO_NET="$net" -e GOYOLO_TMUX=0 \
+    -e GOYOLO_UMASK=0007 -e LANG=C.UTF-8 -e LC_TIME=xx_XX.UTF-8 \
     -e GOPATH=/home/goyolo-test/go -e GOROOT=/home/goyolo-test/toolchain \
     -e GOYOLO_TOOL_PATH=/home/goyolo-test/tools/bin \
     -e PATH=/home/goyolo-test/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \

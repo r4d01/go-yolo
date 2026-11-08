@@ -7,12 +7,13 @@
 #   packages  the `extra package` items from .go-yolo/config, at the host's versions
 #             (language packs add the packages a project's native code needs)
 #   certs     extra CA certificates trusted by the host (/usr/local/share/ca-certificates)
+#   locales   the locales of LANG, LC_ALL and LC_* (with the locales package to generate them)
 #   env       the host's time zone and proxy settings; plus `extra env` items
 
 host_detect() { return 0; }
 
 host_resolve() {
-  local cert name
+  local cert name locales
   plan_add base host image "$BASE_TAG"
   plan_base_parity
 
@@ -22,6 +23,12 @@ host_resolve() {
   while IFS= read -r -d '' cert; do
     plan_cert "$cert"
   done < <(find "${GOYOLO_CA_DIR:-/usr/local/share/ca-certificates}" -name '*.crt' -type f -print0 2>/dev/null | sort -z)
+
+  mapfile -t locales < <(host_locales)
+  if ((${#locales[@]})); then
+    plan_packages host locales
+    for name in "${locales[@]}"; do plan_locale "$name"; done
+  fi
 
   if name="$(host_timezone)"; then plan_env host TZ "$name"; fi
   for name in HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY \
@@ -62,6 +69,17 @@ host_packages() {
     | awk -F'\t' -v arch="$arch" '$1 ~ /^ii/ && ($3 == arch || $3 == "all") { print $2 "\t" $4 }'
 }
 
+# The locales the host's LANG, LC_ALL and LC_* use, once each. C and POSIX are built in.
+host_locales() {
+  local var
+  for var in "${LOCALE_VARS[@]}"; do
+    case ${!var:-} in
+      ''|C|POSIX|C.*) ;;
+      *) printf '%s\n' "${!var}" ;;
+    esac
+  done | sort -u
+}
+
 # The host's time zone name (e.g. Europe/Prague): $TZ, /etc/timezone or the /etc/localtime link.
 host_timezone() {
   local zone
@@ -87,7 +105,10 @@ host_probe() {
   printf 'umask\t%s\n' "$(umask)"
   printf 'architecture\t%s\n' "$(uname -m)"
   printf 'glibc\t%s\n' "$(getconf GNU_LIBC_VERSION 2>/dev/null)"
-  printf 'locale\t%s\n' "${LANG:-(unset)}"
+  # Each locale category as programs see it (and complaints about missing locales).
+  while IFS= read -r line; do
+    printf 'locale %s\t%s\n' "${line%%=*}" "${line#*=}"
+  done < <(locale 2>&1)
   printf 'time zone\t%s (%s)\n' "${TZ:-(unset)}" "$(date +%Z%z)"
   for tool in gcc make git python3; do
     version="(missing)"

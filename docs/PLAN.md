@@ -291,7 +291,9 @@ Done so far: `.go-yolo/` and the project checks; the plan with diff, confirmatio
 extra env; `parity` warnings for base image packages whose version differs from the host's
 (the base is built after the first confirmation, then the plan is resolved and confirmed again
 before the project image). `--prune` (with the first fzf helper, `ui_pick_many`); `--parity` (packs' `<pack>_probe`
-functions, run on both sides; it found two gaps right away: umask and locale). Still to do: fzf
+functions, run on both sides); the two gaps it found right away are closed: the host's umask
+is applied, and the host's locales (`LANG`, `LC_*`) are generated in the project image as
+`locale` items, with `LANGUAGE` passed through. Still to do: fzf
 editing, the agent picker. Named contexts and
 ownership (`--chown`) come with the first pack that copies a toolchain (phase 1).
 

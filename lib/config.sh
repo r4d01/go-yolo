@@ -7,13 +7,14 @@
 #   extra    env      GITHUB_TOKEN         also pass this host environment variable
 #   exclude  package  libx11-dev           leave out an item the plan would include
 #   exclude  cert     /usr/local/share/ca-certificates/old.crt
+#   exclude  locale   cs_CZ.UTF-8
 #
 # The file is parsed, never sourced. The container can't see it (.go-yolo/ is hidden) and a
 # repository can't ship it (tracked .go-yolo/ files are refused).
 #
 # Sets: CONFIG_ITEMS  one "verb kind name" string per config line
 
-CONFIG_KINDS="package cert env"
+CONFIG_KINDS="package cert locale env"
 CONFIG_ITEMS=()
 
 config_file() { printf '%s/.go-yolo/config' "$PROJECT_DIR"; }

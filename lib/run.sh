@@ -5,6 +5,9 @@
 #       TTY_ARGS  -it on a terminal, -i otherwise
 #       CMD       the complete docker run command
 
+# The locale settings passed into the container (the plan generates their locales).
+LOCALE_VARS=(LANG LC_ALL LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES LC_PAPER
+             LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION)
 NET_ARGS=()
 TTY_ARGS=()
 CMD=()
@@ -76,10 +79,12 @@ build_docker_command() {
     -e "GOYOLO_YOLO=$YOLO"
     -e "GOYOLO_TMUX=$USE_TMUX"
     -e "GOYOLO_EXTRA_DOMAINS=${GOYOLO_EXTRA_DOMAINS:-}"
+    -e "GOYOLO_UMASK=$(umask)"
   )
   # Nested tmux: the container's tmux switches its prefix to C-a.
   if [[ -n ${TMUX:-} ]]; then CMD+=(-e GOYOLO_HOST_TMUX=1); fi
-  for var in TERM COLORTERM LANG; do
+  # LANGUAGE is gettext's list of message languages (e.g. en_US:en), not a locale name.
+  for var in TERM COLORTERM LANGUAGE "${LOCALE_VARS[@]}"; do
     if [[ -n ${!var:-} ]]; then CMD+=(-e "$var"); fi
   done
   # The image may lack the host terminal's terminfo entry (xterm-ghostty, xterm-kitty, ...)

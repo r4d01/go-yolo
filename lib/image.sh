@@ -75,10 +75,19 @@ ensure_base_image() {
   "${build[@]}" >&2
 }
 
+# locale_input NAME — localedef's input name for locale NAME: without the code set, but with the
+# modifier (en_US.UTF-8 → en_US, sr_RS.UTF-8@latin → sr_RS@latin).
+locale_input() {
+  local name=$1 modifier=""
+  if [[ $name == *@* ]]; then modifier="@${name#*@}"; name=${name%%@*}; fi
+  printf '%s%s' "${name%%.*}" "$modifier"
+}
+
 # Print the project image's Dockerfile, generated from the plan.
 project_dockerfile() {
-  local packages=() certs=() name
+  local packages=() certs=() locales=() name
   mapfile -t certs < <(plan_items cert copy)
+  mapfile -t locales < <(plan_items locale generate)
   while IFS= read -r name; do
     packages+=("$name=$(plan_value package "$name")")
   done < <(plan_items package apt)
@@ -91,6 +100,15 @@ project_dockerfile() {
     printf 'RUN apt-get update \\\n && apt-get install -y --no-install-recommends \\\n'
     printf '      %s \\\n' "${packages[@]}"
     printf ' && rm -rf /var/lib/apt/lists/*\n'
+  fi
+  if ((${#locales[@]})); then
+    printf '\n# the host'"'"'s locales (as locale-gen would make them)\n'
+    printf 'RUN true'
+    for name in "${locales[@]}"; do
+      printf ' \\\n && localedef -i %s -c -f %s -A /usr/share/locale/locale.alias %s' \
+        "$(locale_input "$name")" "$(plan_value locale "$name")" "$name"
+    done
+    printf '\n'
   fi
   if ((${#certs[@]})); then
     printf '\n# CA certificates trusted by the host, at the same paths\n'
