@@ -1,0 +1,28 @@
+# Domains every agent may reach in --net allowlist mode. One per line, '#' starts a comment.
+# Agent-specific domains live in agents/<agent>.conf (AGENT_DOMAINS).
+# Add more at runtime with GOYOLO_EXTRA_DOMAINS="a.example b.example".
+
+# GitHub (the GitHub web/api/git IP ranges from api.github.com/meta are added as well)
+github.com
+api.github.com
+codeload.github.com
+objects.githubusercontent.com
+raw.githubusercontent.com
+
+# Go modules
+proxy.golang.org
+sum.golang.org
+storage.googleapis.com
+
+# Java (Maven / Gradle)
+repo.maven.apache.org
+repo1.maven.org
+services.gradle.org
+downloads.gradle.org
+plugins.gradle.org
+plugins-artifacts.gradle.org
+
+# npm / PyPI
+registry.npmjs.org
+pypi.org
+files.pythonhosted.org

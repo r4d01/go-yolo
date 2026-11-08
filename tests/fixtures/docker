@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'CALL\n'
+  printf '%q\n' "$@"
+} >>"$DOCKER_TEST_LOG"
+if [[ $* == image\ inspect\ * ]]; then exit "${DOCKER_TEST_IMAGE_STATUS:-0}"; fi
