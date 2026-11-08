@@ -194,7 +194,8 @@ if [[ $GOYOLO_NET == allowlist ]]; then
     domains+=("${AGENT_DOMAINS[@]}")
   fi
 
-  read -d '' -r -a extra <<<"${GOYOLO_EXTRA_DOMAINS//,/ }" || true
+  extra_domains=${GOYOLO_EXTRA_DOMAINS:-}
+  read -d '' -r -a extra <<<"${extra_domains//,/ }" || true
   domains+=("${extra[@]}")
 
   "$GOYOLO_DIR/scripts/init-firewall.sh" "${domains[@]}" \
