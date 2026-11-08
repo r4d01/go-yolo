@@ -80,7 +80,8 @@ ln -s /usr/bin/env "$TEST_HOME/links/startup-executable"
 reject --mount "$TEST_HOME/links/startup-executable" shell
 # Exercise reserved paths that may not exist on this host without creating them.
 (
-  source <(sed -n '/^is_under()/,/^# Workdir:/p' "$REPO_DIR/go-yolo.sh")
+  # shellcheck source=lib/mounts.sh
+  source "$REPO_DIR/lib/mounts.sh"
   HOME_DIR=$TEST_HOME HOME_REAL=$TEST_HOME
   die() { exit 1; }
   for path in /opt/go-yolo /opt/go-yolo/agents /usr/local/bin/curl /usr/local/lib/python3 /etc/profile.d; do
@@ -184,9 +185,32 @@ if command -v script >/dev/null 2>&1; then
   [[ $(run_tty shell -c 'go version') == GOYOLO_TMUX=0 ]] || fail 'shell -c used tmux'
   [[ $(run_tty --tmux claude -p hi) == GOYOLO_TMUX=1 ]] || fail '--tmux did not force tmux'
   pass 'non-interactive agent runs skip tmux unless --tmux is given'
+
+  # stderr on a terminal: colors by default, none with NO_COLOR or TERM=dumb.
+  tty_error() {
+    local cmd
+    printf -v cmd '%q ' env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" "$@" \
+      GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" \
+      "$REPO_DIR/go-yolo.sh" --dry-run --mount /etc/passwd shell
+    TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null | tr -d '\r' || true
+  }
+  [[ $(tty_error TERM=xterm) == *$'\e[31mgo-yolo: error:'* ]] || fail 'error on a terminal was not red'
+  [[ $(tty_error TERM=xterm NO_COLOR=1) != *$'\e['* ]] || fail 'NO_COLOR did not turn colors off'
+  [[ $(tty_error TERM=dumb) != *$'\e['* ]] || fail 'TERM=dumb did not turn colors off'
+  pass 'colors follow the terminal, NO_COLOR and TERM=dumb'
 else
   printf 'skip - script(1) unavailable; tmux selection not tested\n'
 fi
+
+if output="$(launch --color=always --dry-run --mount /etc/passwd shell 2>&1)"; then fail 'accepted /etc/passwd'; fi
+[[ $output == *$'\e[31mgo-yolo: error:\e[0m refusing to mount'* ]] || fail "--color=always error not red: $output"
+if output="$(launch --dry-run --mount /etc/passwd shell 2>&1)"; then fail 'accepted /etc/passwd'; fi
+[[ $output != *$'\e['* ]] || fail 'colors were used without a terminal'
+if output="$(launch --color=sometimes --dry-run shell 2>&1)"; then fail 'accepted --color=sometimes'; fi
+[[ $output == *"invalid --color value 'sometimes'"* ]] || fail "unexpected error: $output"
+dry_run --color=always shell
+for arg in "${ARGS[@]}"; do [[ $arg != *$'\e['* ]] || fail 'color codes leaked into the docker command'; done
+pass '--color always|never overrides detection and never touches stdout'
 
 launch --rebuild shell
 grep -qxF -- --pull "$TEST_DIR/docker.log" || fail 'rebuild did not pull the base'

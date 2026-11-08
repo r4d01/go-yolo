@@ -21,6 +21,7 @@ opts:    --net open|allowlist|none   (default: open)
                                      prefix c: extra shell)
          --tmux                      always use tmux, even for non-interactive runs
          --mount PATH[:ro|:rw]       also mount PATH at the same path (default: ro; repeatable)
+         --color auto|always|never   colored launcher messages (default: auto, honours NO_COLOR)
          --dry-run                   print the docker command and exit
          -h | --help
 
@@ -162,6 +163,10 @@ go-yolo.sh --dry-run codex                 # show the docker command
 Before the agent starts, the launcher prints one line to stderr. It shows the agent, the image,
 the network mode, the YOLO state and what is mounted, so you know which side of the boundary
 you're on. stdout stays clean for `-p`/`exec` output. Set `GOYOLO_QUIET=1` to turn it off.
+
+Launcher messages are colored when stderr is a terminal: errors red, warnings yellow, and in the
+banner `yolo=ON` red, `net=open` yellow. `NO_COLOR` (or `TERM=dumb`) turns colors off;
+`--color=always|never` overrides the detection. The agent's own output is never touched.
 
 ```
 go-yolo: claude in container go-yolo:debian-trixie-bddc78a0 · net=open · yolo=off · tmux · rw: ~/src/myproject, ~/go, ~/.cache/go-build, ~/.claude, ~/.claude.json · ro: ~/.gitconfig, /opt/go/1.27.0
@@ -366,6 +371,25 @@ fetched from `github.com/nodejs/release-keys`, so a build needs both hosts reach
 Images are tagged `go-yolo:<distro>-<codename>-<hash>` (plus `go-yolo:<distro>-<codename>`). The
 hash covers the `Dockerfile`, `entrypoint.sh`, `scripts/`, `agents/`, `firewall/` and `tmux/`, so editing
 any of them triggers a rebuild. Old images are not deleted automatically: `docker image ls go-yolo`.
+
+## Code layout
+
+`go-yolo.sh` only lists the steps of a run; each step lives in a small module under `lib/`:
+
+| file                | what it does                                                       |
+|---------------------|--------------------------------------------------------------------|
+| `lib/ui.sh`         | colors, `die`/`warn`/`note`                                        |
+| `lib/args.sh`       | command-line options and usage                                     |
+| `lib/aliases.sh`    | `--print-aliases`, `--install-aliases`, `--uninstall-aliases`      |
+| `lib/host.sh`       | host distro, release and user                                      |
+| `lib/image.sh`      | image name, content hash and build                                 |
+| `lib/mounts.sh`     | mount safety checks; workdir, extra and git config mounts          |
+| `lib/toolchains.sh` | Go and `GOYOLO_TOOLS` host toolchain mounts                        |
+| `lib/agent.sh`      | the agent profile and its config mounts                            |
+| `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
+
+Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)
+is part of the image. `docs/PLAN.md` describes where this is heading.
 
 ## Checks
 

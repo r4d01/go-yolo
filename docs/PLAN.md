@@ -50,12 +50,13 @@ parse args → detect host → check project → resolve plan → confirm plan �
 go-yolo.sh            entry point: load lib/, call the steps (~50 lines)
 lib/
   ui.sh               colors, die/warn/note, prompts, fzf helpers with plain fallbacks
-  common.sh           is_under and other small helpers
   args.sh             option parsing; the globals it sets are listed at the top
   aliases.sh          --install-aliases & co.
   host.sh             distro, user, base image name
   project.sh          git-root check, .go-yolo/ checks and setup, cache dirs
   mounts.sh           add_mount, path validation, system directory list
+  agent.sh            agent profile and its config mounts
+  toolchains.sh       today's host toolchain mounts (shrinks in phase 1, gone after phase 4)
   plan.sh             plan helpers (plan_toolchain, plan_env, ...), render, diff, confirm
   image.sh            base image build, project Dockerfile generation, project image build
   run.sh              docker run command, tmux decision, banner
@@ -248,8 +249,8 @@ runtime (not baked into the image)
 
 ### 3.10 UI
 
-- `lib/ui.sh` has `ui_error`, `ui_warn`, `ui_note`, `ui_dim`, `ui_ok`. `die`/`warn`/`note`
-  wrap them.
+- `lib/ui.sh` has `die`/`warn`/`note` and `ui_paint red|yellow|green|dim TEXT`; nothing else
+  uses escape codes.
 - Color only when stderr is a terminal and `TERM` isn't `dumb`. `NO_COLOR` turns it off;
   `--color=auto|always|never` overrides. All launcher output goes to stderr, so agent output is
   never colored by go-yolo.
@@ -265,11 +266,12 @@ runtime (not baked into the image)
 Each phase is shippable on its own: behaviour that a phase hasn't replaced yet keeps working the
 old way. Each phase updates the README and the tests.
 
-### Step 1 — Split the launcher (no behaviour change)
+### Step 1 — Split the launcher (no behaviour change) — done
 
 - Move `go-yolo.sh` into `lib/` modules as in 3.2; `go-yolo.sh` becomes the step list.
 - Add `lib/ui.sh` with colors, `NO_COLOR` and `--color`.
-- Split `tests/run.sh` per module.
+- Tests stay in `tests/run.sh` for now; they get split per module once phase 0 adds modules
+  with logic of their own.
 
 Done when: `tests/run.sh` and `tests/docker.sh` pass unchanged (apart from color-aware output
 checks), and `--dry-run` output is identical to before for the test fixtures.
