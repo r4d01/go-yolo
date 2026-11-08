@@ -18,6 +18,7 @@ ln -s "$TEST_HOME" "$TEST_HOME/links/home"
 ln -s /run "$TEST_HOME/links/run"
 ln -s "$TEST_HOME/project" "$TEST_HOME/links/home-hop"
 ln -s "$TEST_HOME/project/nested/deeper" "$TEST_HOME/links/project-hop"
+git -C "$TEST_HOME/project" init -q
 
 passed=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -192,7 +193,7 @@ if command -v script >/dev/null 2>&1; then
     printf -v cmd '%q ' env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" "$@" \
       GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" \
       "$REPO_DIR/go-yolo.sh" --dry-run --mount /etc/passwd shell
-    TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null | tr -d '\r' || true
+    (cd "$TEST_HOME/project" && TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null | tr -d '\r') || true
   }
   [[ $(tty_error TERM=xterm) == *$'\e[31mgo-yolo: error:'* ]] || fail 'error on a terminal was not red'
   [[ $(tty_error TERM=xterm NO_COLOR=1) != *$'\e['* ]] || fail 'NO_COLOR did not turn colors off'
@@ -211,6 +212,53 @@ if output="$(launch --color=sometimes --dry-run shell 2>&1)"; then fail 'accepte
 dry_run --color=always shell
 for arg in "${ARGS[@]}"; do [[ $arg != *$'\e['* ]] || fail 'color codes leaked into the docker command'; done
 pass '--color always|never overrides detection and never touches stdout'
+
+# launch_in DIR ARGS... — like launch, but from DIR; prints stderr, never fails.
+launch_in() (
+  cd "$1" && shift
+  env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" GOYOLO_TOOLS= GOENV=off \
+    GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1 \
+    DOCKER_TEST_LOG="$TEST_DIR/docker.log" GOROOT="$TEST_HOME/toolchain" GOPATH="$TEST_HOME/go" \
+    GOCACHE="$TEST_HOME/cache" GOMODCACHE="$TEST_HOME/go/pkg/mod" \
+    "$REPO_DIR/go-yolo.sh" "$@" 2>&1 >/dev/null || true
+)
+mkdir -p "$TEST_DIR/not-a-repo"
+[[ $(launch_in "$TEST_DIR/not-a-repo" --dry-run shell) == *'not inside a git repository'* ]] \
+  || fail 'ran outside a git repository'
+[[ $(launch_in "$TEST_HOME/project/nested" --dry-run shell) == *"run go-yolo from the repository's root directory: cd $TEST_HOME/project"* ]] \
+  || fail 'ran from a repository subdirectory'
+pass 'go-yolo runs only from a git repository root'
+
+STATE="$TEST_HOME/project/.go-yolo"
+rm -rf -- "$STATE"   # earlier real runs created it
+dry_run shell 2>/dev/null
+[[ ! -e $STATE ]] || fail 'dry run created .go-yolo'
+for arg in "${ARGS[@]}"; do [[ $arg != "type=tmpfs,destination=$STATE,tmpfs-mode=0555" ]] || break; done
+[[ $arg == "type=tmpfs,destination=$STATE,tmpfs-mode=0555" ]] || fail '.go-yolo is not covered by a tmpfs'
+launch claude 2>/dev/null
+[[ -d $STATE && $(stat -c %a "$STATE") == 700 ]] || fail '.go-yolo was not created with mode 700'
+[[ $(cat "$STATE/.gitignore") == '*' ]] || fail '.go-yolo/.gitignore does not ignore everything'
+[[ -z $(git -C "$TEST_HOME/project" status --porcelain --ignored=no) ]] || fail 'git sees .go-yolo'
+pass '.go-yolo is created on a real run, ignored by git and hidden from the container'
+
+mv "$STATE" "$STATE.real"
+ln -s "$STATE.real" "$STATE"
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *'is a symlink'* ]] || fail 'accepted a .go-yolo symlink'
+rm "$STATE" && mv "$STATE.real" "$STATE"
+git -C "$TEST_HOME/project" add -f .go-yolo/.gitignore
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *'tracks files in .go-yolo/ (.go-yolo/.gitignore)'* ]] \
+  || fail 'accepted a tracked .go-yolo'
+git -C "$TEST_HOME/project" rm -q --cached .go-yolo/.gitignore
+pass 'a symlinked or git-tracked .go-yolo is refused'
+
+: >"$TEST_HOME/project/Dockerfile"
+[[ $(launch_in "$TEST_HOME/project" shell) == *'add .go-yolo/ to its .dockerignore'* ]] || fail 'no .dockerignore warning'
+[[ $(launch_in "$TEST_HOME/project" shell) != *'.dockerignore'* ]] || fail '.dockerignore warning repeated'
+rm -f "$STATE/warned-dockerignore"
+printf '.go-yolo/\n' >"$TEST_HOME/project/.dockerignore"
+[[ $(launch_in "$TEST_HOME/project" shell) != *'.dockerignore'* ]] || fail 'warned despite .dockerignore'
+rm -f "$TEST_HOME/project/Dockerfile" "$TEST_HOME/project/.dockerignore"
+pass 'a Dockerfile without .go-yolo/ in .dockerignore gets a one-time warning'
 
 launch --rebuild shell
 grep -qxF -- --pull "$TEST_DIR/docker.log" || fail 'rebuild did not pull the base'

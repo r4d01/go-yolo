@@ -136,7 +136,15 @@ The first run builds the image (a few minutes). Later runs start immediately.
 
 ## Usage
 
-Run it from a project directory. Running from `$HOME`, `/` or any parent of `$HOME` is refused.
+Run it from the **root directory of a git repository**. Anywhere else (a subdirectory, a directory
+that isn't a repository, `$HOME`, `/` or any parent of `$HOME`) is refused.
+
+The first run creates `.go-yolo/` in the repository root for go-yolo's per-project state. It
+contains a `.gitignore` with `*`, so git ignores it without any change to your own `.gitignore`.
+Inside the container `.go-yolo/` is covered by an empty, read-only directory, so the agent can't
+see or change it. A `.go-yolo` that is a symlink, isn't owned by you, or has files tracked by git
+is refused: a repository must not ship it. If the project has a `Dockerfile` whose `.dockerignore`
+doesn't exclude `.go-yolo/`, go-yolo warns once.
 
 ```bash
 cd ~/src/myproject
@@ -212,6 +220,7 @@ Each path is mounted at the **same absolute path**, and only if it exists:
 | host path                                    | mode       | when                                                |
 |----------------------------------------------|------------|-----------------------------------------------------|
 | `$PWD`                                       | read-write | always                                              |
+| `$PWD/.go-yolo`                              | hidden     | always (an empty read-only tmpfs covers it)         |
 | `~/.gitconfig`                               | read-only  | if it exists                                        |
 | `~/.config/git/config`, `ignore`, `attributes` | read-only | each file, if it exists                            |
 | `GOROOT`                                     | read-only  | if `go` is on `PATH`                                |
@@ -384,6 +393,7 @@ any of them triggers a rebuild. Old images are not deleted automatically: `docke
 | `lib/host.sh`       | host distro, release and user                                      |
 | `lib/image.sh`      | image name, content hash and build                                 |
 | `lib/mounts.sh`     | mount safety checks; workdir, extra and git config mounts          |
+| `lib/project.sh`    | git repository root check, the `.go-yolo/` state directory         |
 | `lib/toolchains.sh` | Go and `GOYOLO_TOOLS` host toolchain mounts                        |
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |

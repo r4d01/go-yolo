@@ -83,7 +83,10 @@ build_docker_command() {
     && terminfo="$(infocmp -x "$TERM" 2>/dev/null)"; then
     CMD+=(-e "GOYOLO_TERMINFO=$terminfo")
   fi
-  CMD+=("${GO_ENV[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}" "${NET_ARGS[@]}" "$IMAGE" "${PASSTHROUGH_ARGS[@]}")
+  CMD+=("${GO_ENV[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}")
+  # Hide .go-yolo/ behind an empty tmpfs that only root could write to.
+  CMD+=(--mount "type=tmpfs,$(csv_field "destination=$STATE_DIR"),tmpfs-mode=0555")
+  CMD+=("${NET_ARGS[@]}" "$IMAGE" "${PASSTHROUGH_ARGS[@]}")
 }
 
 warn_yolo() {

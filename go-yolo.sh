@@ -21,6 +21,8 @@ source "$REPO_DIR/lib/host.sh"
 source "$REPO_DIR/lib/image.sh"
 # shellcheck source=lib/mounts.sh
 source "$REPO_DIR/lib/mounts.sh"
+# shellcheck source=lib/project.sh
+source "$REPO_DIR/lib/project.sh"
 # shellcheck source=lib/toolchains.sh
 source "$REPO_DIR/lib/toolchains.sh"
 # shellcheck source=lib/agent.sh
@@ -33,8 +35,11 @@ parse_args "$@"            # exits for --help and the alias commands
 detect_host
 choose_image
 
-# Mounts. Explicit ones come first: the first mode given for a path wins.
-mount_workdir
+mount_workdir              # the project directory; refuses $HOME and its parents
+check_project              # must be the git repository root
+ensure_state_dir           # .go-yolo/
+
+# More mounts. Explicit ones come first: the first mode given for a path wins.
 add_user_mounts
 add_git_config_mounts
 add_go_mounts
