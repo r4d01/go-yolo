@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Stub dpkg: `dpkg -S PATH` answers from $DPKG_S_FIXTURE ("package: path" lines); anything
+# else goes to the real dpkg.
+set -euo pipefail
+if [[ ${1:-} == -S ]]; then
+  shift
+  [[ ${1:-} != -- ]] || shift
+  grep -F -- ": $1" "${DPKG_S_FIXTURE:-/dev/null}" 2>/dev/null | grep -E -- ": $1\$" || exit 1
+  exit 0
+fi
+exec /usr/bin/dpkg "$@"

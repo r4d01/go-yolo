@@ -4,9 +4,12 @@
 #
 # A plan is a sorted list of lines with six tab-separated fields:
 #
-#   kind     group  method  name                       value          flags
-#   base     host   image   go-yolo-base:debian-trixie-3f2a91c0  -     -
-#   package  host   apt     libsqlite3-dev             3.46.1-2       -
+#   kind      group  method  name                      value          flags
+#   base      host   image   go-yolo-base:debian-trixie-3f2a91c0  -     -
+#   toolchain go     copy    /opt/go/1.27.0            go1.27.0       -
+#   tools     go     copy    /home/me/go/bin           2 files, 1a2b3c4d  user-owned
+#   link      java   link    /home/me/.sdkman/candidates/java/current  /home/me/.sdkman/candidates/java/21.0.5-tem  -
+#   package   host   apt     libsqlite3-dev            3.46.1-2       -
 #   package  extra  apt     protobuf-compiler          3.21.12-11     not-on-host
 #   parity   host   check   zlib1g                     1:1.3-1+deb13u1  host-behind=1:1.3-1
 #   cert     host   copy    /usr/local/share/ca-certificates/corp.crt  1a2b3c4d  -
@@ -14,8 +17,17 @@
 #   env      host   env     TZ                         Europe/Prague  -
 #   env      extra  env     GITHUB_TOKEN               sha256:5e6f..  hidden
 #   env      host   skip    HTTPS_PROXY                -              secret
+#   mount    go     ro      /home/me/.config/go/env    1a2b3c4d       -
+#   cache    go     rw      /home/me/go/pkg/mod        go-mod         -
+#   seed     go     ro      /home/me/go/pkg/mod/cache/download  go-mod  -
+#   domain   go     allow   proxy.golang.org           -              -
 #
-#   kind    base, package, cert, locale: built into the image; env: passed when the container starts;
+#   kind    built into the image: base, toolchain and tools (host directories copied at the
+#           same path), link, package, cert, locale;
+#           passed when the container starts: env; mount (a host file or directory, read-only, at
+#           the same path); cache (.go-yolo/cache/<value>, read-write, at the host's cache path);
+#           seed (a host cache, read-only, as /var/cache/go-yolo/seed/<value>); domain (allowed
+#           with --net allowlist);
 #           parity: a base image package whose version differs from the host's (a warning)
 #   group   who asks for it: host (every project), extra (.go-yolo/config); later go, rust, ...
 #   method  how: image, apt, copy, env; or skip: shown so you see it, but left out
@@ -143,6 +155,84 @@ plan_cert() {
   plan_add cert host copy "$path" "$(sha256sum <"$path" | cut -c1-8)"
 }
 
+# plan_copy KIND GROUP DIR VALUE — copy host directory DIR into the image at the same path,
+# owned as on the host: by root, or by you (then `go install` and the like work there too, but
+# their results don't outlive the container). KIND is what it is (toolchain, tools); VALUE
+# shows a change (a version, or dir_fingerprint). A symlinked DIR is copied at its real path,
+# plus a link item for the symlink.
+plan_copy() {
+  local kind=$1 group=$2 dir=$3 value=$4 real flags=-
+  real="$(realpath -- "$dir")"
+  if is_system_dir "$real"; then
+    die "refusing to copy $dir into the image: it is a system directory, your home directory or one of its parents"
+  fi
+  if is_under "$PROJECT_DIR" "$real"; then
+    die "refusing to copy $dir into the image: it contains the project"
+  fi
+  if config_has exclude "$kind" "$real"; then
+    plan_add "$kind" "$group" skip "$real" "$value" excluded
+    return 0
+  fi
+  if [[ $(stat -c %u -- "$real") == "$HOST_UID" ]]; then flags=user-owned; fi
+  plan_add "$kind" "$group" copy "$real" "$value" "$flags"
+  if [[ $real != "$(realpath -ms -- "$dir")" ]]; then plan_add link "$group" link "$dir" "$real"; fi
+}
+
+# dir_fingerprint DIR — "N files, HASH": changes when a file is added, removed or changed.
+dir_fingerprint() {
+  local count hash
+  count="$(find "$1" -type f | wc -l)"
+  hash="$(find "$1" -printf '%P %s %T@\n' | LC_ALL=C sort | sha256sum | cut -c1-8)"
+  printf '%s files, %s' "$count" "$hash"
+}
+
+# plan_mount GROUP PATH [FLAGS] — mount host file or directory PATH read-only at the same path.
+plan_mount() {
+  local group=$1 path=$2 flags=${3:--} value=-
+  if plan_has mount "$path"; then return 0; fi
+  if config_has exclude mount "$path"; then
+    plan_add mount "$group" skip "$path" - excluded
+    return 0
+  fi
+  validate_mount_path "$path"
+  if [[ -f $path ]]; then value="$(sha256sum <"$path" | cut -c1-8)"; fi
+  plan_add mount "$group" ro "$path" "$value" "$flags"
+}
+
+# plan_cache GROUP PATH NAME — the project cache .go-yolo/cache/NAME, read-write at the host's
+# cache path PATH. The host's own cache at PATH is never used.
+plan_cache() {
+  local group=$1 path=$2 name=$3
+  if config_has exclude cache "$path"; then
+    plan_add cache "$group" skip "$path" "$name" excluded
+    return 0
+  fi
+  validate_mount_path "$path"
+  plan_add cache "$group" rw "$path" "$name"
+}
+
+# plan_seed GROUP PATH NAME — the host's cache PATH, read-only as /var/cache/go-yolo/seed/NAME,
+# for tools that can read from such a cache without writing to it.
+plan_seed() {
+  local group=$1 path=$2 name=$3
+  [[ -d $path ]] || return 0
+  if config_has exclude seed "$path"; then
+    plan_add seed "$group" skip "$path" "$name" excluded
+    return 0
+  fi
+  validate_mount_path "$path"
+  plan_add seed "$group" ro "$path" "$name"
+}
+
+# The container path of seed NAME.
+seed_path() { printf '/var/cache/go-yolo/seed/%s' "$1"; }
+
+# plan_domain GROUP HOST — allow HOST with --net allowlist.
+plan_domain() {
+  if plan_has domain "$2"; then return 0; fi
+  plan_add domain "$1" allow "$2"
+}
+
 # plan_locale NAME — generate locale NAME (e.g. en_US.UTF-8) in the image. Its character map
 # comes from the host's list of supported locales; the `locales` package must be in the plan.
 plan_locale() {
@@ -177,8 +267,8 @@ looks_secret() {
   [[ $value =~ ://[^/@]*:[^/@]*@ ]]
 }
 
-# plan_env GROUP NAME [VALUE] — pass host variable NAME into the container. With VALUE (e.g.
-# a time zone go-yolo worked out itself), NAME is set to VALUE first. Looks-secret variables
+# plan_env GROUP NAME [VALUE] — pass host variable NAME into the container. With VALUE (a value
+# go-yolo works out itself, e.g. the time zone), NAME=VALUE is passed instead. Looks-secret variables
 # are only passed when .go-yolo/config asks for them (extra env NAME); their values are never
 # shown or stored, only a hash, so a change is still noticed.
 plan_env() {
@@ -189,7 +279,8 @@ plan_env() {
     return 0
   fi
   if (($# >= 3)); then
-    export "$name=$3"
+    plan_add env "$group" env "$name" "${3:--}" derived
+    return 0
   elif [[ ! -v $name ]]; then
     if [[ $group == extra ]]; then plan_add env "$group" skip "$name" - not-set; fi
     return 0
@@ -213,7 +304,11 @@ plan_finish() {
   local ranked=()
   for line in "${PLAN[@]}"; do
     kind=${line%%$'\t'*}
-    case $kind in base) rank=1 ;; package) rank=2 ;; parity) rank=3 ;; cert) rank=4 ;; locale) rank=5 ;; *) rank=9 ;; esac
+    case $kind in
+      base) rank=10 ;; toolchain) rank=11 ;; tools) rank=12 ;; link) rank=13 ;; package) rank=14 ;;
+      parity) rank=15 ;; cert) rank=16 ;; locale) rank=17 ;;
+      mount) rank=20 ;; cache) rank=21 ;; seed) rank=22 ;; domain) rank=23 ;; *) rank=29 ;;
+    esac
     ranked+=("$rank"$'\t'"$line")
   done
   mapfile -t PLAN < <(printf '%s\n' "${ranked[@]}" | LC_ALL=C sort -t $'\t' -k1,1n -k5,5 | cut -f2-)
@@ -243,7 +338,7 @@ confirmed_plan_hash() {
 is_build_line() {
   local kind group method rest
   IFS=$'\t' read -r kind group method rest <<<"$1"
-  [[ $method != skip ]] && case $kind in base|package|cert|locale) true ;; *) false ;; esac
+  [[ $method != skip ]] && case $kind in base|toolchain|tools|link|package|cert|locale) true ;; *) false ;; esac
 }
 
 # Load .go-yolo/config and let every pack add its items.
@@ -257,12 +352,19 @@ resolve_plan() {
   plan_finish
 }
 
-# docker run -e arguments for the plan's env items (values come from the environment).
+# docker run -e arguments for the plan's env items: NAME=VALUE for values go-yolo works out
+# itself, otherwise NAME alone, so docker takes the value from the environment (and a secret
+# never appears on a command line).
 plan_env_args() {
-  local line kind group method name rest
+  local line kind group method name value flags
   for line in "${PLAN[@]}"; do
-    IFS=$'\t' read -r kind group method name rest <<<"$line"
-    if [[ $kind == env && $method == env ]]; then printf '%s\n' -e "$name"; fi
+    IFS=$'\t' read -r kind group method name value flags <<<"$line"
+    [[ $kind == env && $method == env ]] || continue
+    if [[ $flags == derived ]]; then
+      printf '%s\n' -e "$name=${value#-}"
+    else
+      printf '%s\n' -e "$name"
+    fi
   done
 }
 
@@ -295,6 +397,7 @@ plan_note() {
     excluded) printf 'excluded in .go-yolo/config' ;;
     secret) printf 'not passed: looks like a secret (to pass it: extra env %s)' "$2" ;;
     hidden) printf 'value not shown' ;;
+    derived) printf 'set by go-yolo' ;;
     empty) printf 'empty value' ;;
     not-set) printf 'not passed: not set on the host' ;;
     host-behind=*) printf "⚠ the base image has this newer version, the host has %s (apt upgrade the host to match)" "${1#host-behind=}" ;;
@@ -303,6 +406,8 @@ plan_note() {
     not-on-host) printf '⚠ not installed on the host: a build that needs it works here but fails on the host' ;;
     not-in-archive) printf "⚠ not installed: the host's version isn't in the %s archive (third-party repository, or apt upgrade the host)" "$HOST_ID" ;;
     not-found) printf '⚠ no such apt package' ;;
+    user-owned) printf 'owned by you, as on the host' ;;
+    outside-repo) printf '⚠ outside the repository: read-only in the container' ;;
     no-locales-package) printf "⚠ not generated: the locales package isn't in the plan" ;;
     unsupported-locale) printf "⚠ not generated: not in the host's list of supported locales" ;;
     *) printf '%s' "$1" ;;
@@ -317,10 +422,15 @@ plan_row() {
   IFS=$'\t' read -r kind group method name value flags <<<"$2"
   case $kind in
     package|parity) text="$name${value:+=$value}"; text=${text%=-} ;;
+    toolchain|tools) text="$name ($value)" ;;
+    link) text="$name → $value" ;;
+    cache) text="$name ← .go-yolo/cache/$value" ;;
+    seed) text="$name (read-only, as $(seed_path "$value"))" ;;
+    mount) text="$name (read-only)" ;;
     env) if [[ $value == - || $value == sha256:* ]]; then text=$name; else text="$name=$value"; fi ;;
     *) text=$name ;;
   esac
-  if [[ $group != host ]]; then text+=" ($group)"; fi
+  if [[ $group != host ]]; then text+=" [$group]"; fi
 
   if [[ $flags != - ]]; then
     IFS=, read -ra flag_list <<<"$flags"
@@ -337,7 +447,7 @@ plan_row() {
     -) color=red ;;
     \~) color=yellow ;;
   esac
-  printf '  %s %-8s %s' "$(ui_paint "$color" "$mark")" "$kind" "$(if [[ $method == skip ]]; then ui_paint dim "$text"; else printf '%s' "$text"; fi)" >&2
+  printf '  %s %-9s %s' "$(ui_paint "$color" "$mark")" "$kind" "$(if [[ $method == skip ]]; then ui_paint dim "$text"; else printf '%s' "$text"; fi)" >&2
   if [[ -n $notes ]]; then
     if [[ $notes == *⚠* ]]; then printf '  %s' "$(ui_paint yellow "$notes")" >&2
     else printf '  %s' "$(ui_paint dim "$notes")" >&2; fi

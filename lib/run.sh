@@ -12,6 +12,49 @@ NET_ARGS=()
 TTY_ARGS=()
 CMD=()
 
+# Mount the plan's mount, cache and seed items (creating missing project caches).
+add_plan_mounts() {
+  local line kind group method name value flags cache
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name value flags <<<"$line"
+    [[ $method != skip ]] || continue
+    case $kind in
+      mount) add_mount "$name" ro ;;
+      cache)
+        cache="$PROJECT_DIR/.go-yolo/cache/$value"
+        if ((!DRY_RUN)); then mkdir -p -- "$cache"; fi
+        add_mount "$name" rw "$cache"
+        ;;
+      seed) add_mount "$(seed_path "$value")" ro "$name" ;;
+    esac
+  done
+}
+
+# The PATH entries for the plan's toolchains (their bin/) and tools directories, then the
+# GOYOLO_TOOLS ones; the entrypoint puts them first on PATH after dropping privileges.
+tool_path() {
+  local line kind group method name rest dirs=()
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    [[ $method != skip ]] || continue
+    case $kind in
+      toolchain) dirs+=("$name/bin") ;;
+      tools) dirs+=("$name") ;;
+    esac
+  done
+  if [[ -n $LEGACY_TOOL_PATH ]]; then dirs+=("$LEGACY_TOOL_PATH"); fi
+  local IFS=:
+  printf '%s' "${dirs[*]}"
+}
+
+# GOYOLO_EXTRA_DOMAINS plus the plan's domain items, for --net allowlist.
+allowed_domains() {
+  local domains=() name
+  read -d '' -ra domains <<<"${GOYOLO_EXTRA_DOMAINS:-}" || true
+  while IFS= read -r name; do domains+=("$name"); done < <(plan_items domain allow)
+  printf '%s' "${domains[*]}"
+}
+
 set_network_args() {
   case $NET in
     open) NET_ARGS=() ;;
@@ -78,7 +121,7 @@ build_docker_command() {
     -e "GOYOLO_NET=$NET"
     -e "GOYOLO_YOLO=$YOLO"
     -e "GOYOLO_TMUX=$USE_TMUX"
-    -e "GOYOLO_EXTRA_DOMAINS=${GOYOLO_EXTRA_DOMAINS:-}"
+    -e "GOYOLO_EXTRA_DOMAINS=$(allowed_domains)"
     -e "GOYOLO_UMASK=$(umask)"
   )
   # Nested tmux: the container's tmux switches its prefix to C-a.
@@ -94,7 +137,8 @@ build_docker_command() {
     CMD+=(-e "GOYOLO_TERMINFO=$terminfo")
   fi
   mapfile -t env_args < <(plan_env_args)
-  CMD+=("${env_args[@]}" "${GO_ENV[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}")
+  CMD+=("${env_args[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}")
+  if [[ -n $(tool_path) ]]; then CMD+=(-e "GOYOLO_TOOL_PATH=$(tool_path)"); fi
   # Hide .go-yolo/ behind an empty tmpfs that only root could write to.
   CMD+=(--mount "type=tmpfs,$(csv_field "destination=$STATE_DIR"),tmpfs-mode=0555")
   CMD+=("${NET_ARGS[@]}" "$IMAGE" "${PASSTHROUGH_ARGS[@]}")

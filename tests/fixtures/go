@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# Stub go:
+#   go env NAME...         prints $NAME for each name, one per line (like go env)
+#   go version             prints go version $GOVERSION (default go1.99.0)
+#   go work edit -json F   prints $GO_TEST_WORK_JSON
 set -euo pipefail
-[[ $* == 'env GOROOT GOPATH GOCACHE GOMODCACHE GOENV' ]]
-printf '%s\n' "$GOROOT" "$GOPATH" "$GOCACHE" "$GOMODCACHE" "$GOENV"
+case ${1:-} in
+  env)
+    shift
+    GOVERSION=${GOVERSION:-go1.99.0}
+    for name in "$@"; do printf '%s\n' "${!name-}"; done
+    ;;
+  version) printf 'go version %s linux/amd64\n' "${GOVERSION:-go1.99.0}" ;;
+  work) printf '%s\n' "${GO_TEST_WORK_JSON:-{\}}" ;;
+  *) exit 2 ;;
+esac

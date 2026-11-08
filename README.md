@@ -1,8 +1,9 @@
 # go-yolo
 
 `go-yolo` runs AI coding agents (**Claude Code**, **OpenAI Codex CLI**, **Mistral Vibe**, **opencode**)
-inside a Docker container that mirrors your host user, your project directory, your Go toolchain
-and other host toolchains (Java, Maven, Gradle, ...).
+inside a Docker container that mirrors your host: your user, your project directory, and a
+per-project image with copies of your host's toolchains (Go today; Java, Maven, Gradle are still
+mounted), packages, locales and settings. You confirm what goes in before it is built.
 
 By default the agent runs **with its normal permission prompts** (Claude Code starts in auto mode,
 where a classifier approves safe actions and prompts for risky ones). With `--yolo` those prompts are
@@ -29,7 +30,6 @@ opts:    --net open|allowlist|none   (default: open)
 env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put on PATH
                                      (default shown; add e.g. sbt kotlin ant, or set empty)
          GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
-         GOYOLO_GOPATH_MODE=rw|ro|modcache  how GOPATH is mounted (default: rw)
          GOYOLO_EXTRA_DOMAINS="a.example ..."  more domains for --net allowlist
          GOYOLO_QUIET=1                     don't print the mount summary line
          GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
@@ -73,8 +73,10 @@ after privileges are dropped.
   an MCP server to `~/.codex/config.toml`, or a plugin to `~/.config/opencode`. That code later runs
   **on the host** when you use the agent outside the container. The agent's credentials in that
   directory are readable too.
-- **`~/go/bin` when GOPATH is mounted read-write** (the default). The agent can replace binaries
-  that you later run on the host. Use `GOYOLO_GOPATH_MODE=modcache` or `ro` to avoid this.
+- **Project caches in `.go-yolo/cache/`** (Go's module and build cache). The agent can write
+  them, so one session can affect the next one of the same project, but nothing on the host uses
+  them. Your own `~/go` and `~/.cache/go-build` are never written; the host's module download
+  cache is only read (as a read-only seed).
 - **`~/.m2` and `~/.gradle`** (mounted read-write when `mvn`/`gradle` are in `GOYOLO_TOOLS`, the
   default). `settings.xml` and `gradle.properties` often hold repository credentials, and the
   agent can add a Gradle init script that later runs on the host. Set `GOYOLO_TOOLS=` to opt out.
@@ -93,13 +95,14 @@ after privileges are dropped.
 - A **Debian, Ubuntu or Kali** host (`ID` in `/etc/os-release`). Derivatives such as Mint or
   Pop!\_OS are not detected on purpose: their codenames are not Docker image tags.
 - Docker, and a user that can run `docker` (e.g. in the `docker` group).
-- Optional: Go on the host. Its toolchain and caches are mounted into the container.
+- Optional: Go on the host. A project with a `go.mod` gets a copy of its toolchain and tools
+  (see [Go](#go)).
 - Optional: a JDK, Maven, Gradle (or other tools, see [Host toolchains](#host-toolchains)) on the
   host. They are mounted into the container too.
 
 The image's base matches the host (`debian:<codename>`, `ubuntu:<codename>` or
-`kalilinux/kali-rolling`), so host-mounted binaries (the Go toolchain, `~/go/bin/*`, a JDK) find the same
-glibc. **Kali is a rolling release:** the image's glibc matches the host only while both are up to
+`kalilinux/kali-rolling`), so host binaries copied or mounted into it (the Go toolchain,
+`~/go/bin/*`, a JDK) find the same glibc. **Kali is a rolling release:** the image's glibc matches the host only while both are up to
 date. Run `go-yolo.sh --rebuild shell` after upgrading the host.
 
 ## Install
@@ -181,7 +184,7 @@ banner `yolo=ON` red, `net=open` yellow. `NO_COLOR` (or `TERM=dumb`) turns color
 `--color=always|never` overrides the detection. The agent's own output is never touched.
 
 ```
-go-yolo: claude in container go-yolo:debian-trixie-bddc78a0 · net=open · yolo=off · tmux · rw: ~/src/myproject, ~/go, ~/.cache/go-build, ~/.claude, ~/.claude.json · ro: ~/.gitconfig, /opt/go/1.27.0
+go-yolo: claude in container go-yolo:myproject-d0c6fbb2-a02bf713 · plan a02bf713 (2026-11-09 10:12) · net=open · yolo=off · tmux · rw: ~/src/myproject, ~/.claude, ~/.claude.json, ~/go/pkg/mod, ~/.cache/go-build · ro: ~/.gitconfig, /var/cache/go-yolo/seed/go-mod
 ```
 
 Log in inside the container the first time (e.g. `/login` in Claude, `codex login`). The agent's
@@ -255,6 +258,27 @@ The confirmed plan is stored in `.go-yolo/plan`. The project image's tag
 (`go-yolo:<project>-<path hash>-<plan hash>`) includes a hash of the plan's build-time items, so
 a change to them builds a new image; a change to `env` items only needs your confirmation.
 
+### Go
+
+A project with a `go.mod` (or `go.work`) gets the host's Go, as the host's `go env` reports it
+(read with `GOTOOLCHAIN=local`, so reading it never downloads a toolchain):
+
+| item | what | how |
+|------|------|-----|
+| `toolchain` | `GOROOT` | copied into the image at the same path (its apt packages if it comes from apt) |
+| `tools` | `GOBIN`, or the first GOPATH entry's `bin/` | copied at the same path, owned by you: `go install` works in the container, but its results don't outlive it |
+| `cache` | `GOMODCACHE`, `GOCACHE` | at the host's paths, but from `.go-yolo/cache/go-mod` and `go-build`; they persist between runs |
+| `seed` | the host's `$GOMODCACHE/cache/download` | read-only as `/var/cache/go-yolo/seed/go-mod`, the first `GOPROXY` entry: modules (and toolchains a `go.mod` switches to) the host already has aren't downloaded again |
+| `mount` | the `GOENV` file (`go env -w` settings); a `go.work` outside the repository and the modules it uses outside it | read-only at the same path, with a warning for the outside ones |
+| `package` | the libraries of `#cgo pkg-config: NAME` lines (the package owning `NAME.pc` on the host), and pkg-config | apt, at the host's versions |
+| `env` | `GOPATH`, `GOBIN`, `GOMODCACHE`, `GOCACHE`, `GOENV`, `GOPROXY` (seed first); Go variables set in your environment (`GOFLAGS`, `GOPRIVATE`, `CGO_ENABLED`, `CC`, ...) | `docker run -e` |
+| `domain` | the `GOPROXY` and `GOSUMDB` hosts | allowed with `--net allowlist` |
+
+The toolchain and tools are first on `PATH`. Your `~/go`, `~/go/bin` and `~/.cache/go-build`
+are never mounted, so nothing the agent does there reaches the host. With the seed, a build
+works even with `--net none` as long as the host has the modules. `--parity` compares `go
+version`, `go env` (except `GOPROXY`, which starts with the seed on purpose) and the tools.
+
 ### Checking parity
 
 `go-yolo.sh --parity` (from the project root, like a normal run) runs the same probes on the
@@ -317,10 +341,7 @@ Each path is mounted at the **same absolute path**, and only if it exists:
 | `$PWD/.go-yolo`                              | hidden     | always (an empty read-only tmpfs covers it)         |
 | `~/.gitconfig`                               | read-only  | if it exists                                        |
 | `~/.config/git/config`, `ignore`, `attributes` | read-only | each file, if it exists                            |
-| `GOROOT`                                     | read-only  | if `go` is on `PATH`                                |
-| `GOPATH`                                     | `GOYOLO_GOPATH_MODE` (`rw` default, `ro`) | if `go` is on `PATH`   |
-| `GOMODCACHE` only                            | read-write | `GOYOLO_GOPATH_MODE=modcache`                       |
-| `GOCACHE`, `GOENV` file                      | rw / ro    | if they exist                                       |
+| the plan's `mount`, `cache` and `seed` items | read-only; caches read-write from `.go-yolo/cache/` | see [The plan](#the-plan) and [Go](#go) |
 | each `GOYOLO_TOOLS` tool's install dir       | read-only  | if the tool is on `PATH` (see below)                |
 | `~/.m2`, `GRADLE_USER_HOME` or `~/.gradle`, `~/.sbt`, `~/.ivy2`, `~/.cache/coursier` | read-write | if the matching tool is in `GOYOLO_TOOLS` |
 | the selected agent's config (table below)    | read-write | that agent only, never another agent's config      |
@@ -333,7 +354,8 @@ reason. Other missing config files are skipped.
 Every mount is checked, including automatic toolchains, caches, agent config and the workdir.
 System roots (`/`, `/usr`, `/etc`, ...), `$HOME` and its parents are refused, including symlink
 aliases. `/run`, `/dev`, `/proc`, `/sys` and their descendants are also refused. Unsafe cache
-settings such as `GOPATH=$HOME` or `GRADLE_USER_HOME=$HOME` stop the launcher with an error.
+settings such as `GOMODCACHE=$HOME`, `GOROOT=/usr` or `GRADLE_USER_HOME=$HOME` stop the launcher
+with an error.
 Mounts must also avoid `/opt/go-yolo`, system executable and library directories, and `/etc`
 configuration paths used during privileged startup. Debian JDK installations under
 `/usr/lib/jvm` and their Java configuration directories remain supported.
@@ -553,7 +575,9 @@ skip when Docker is unavailable.
 - The Kali image matches the host's glibc only while both are up to date (rebuild after upgrading).
 - Only the host's primary GID is mapped. Supplementary groups are not.
 - Running as root on the host (UID 0) is refused.
-- Only the GOPATH's first entry is mounted when GOPATH is a list.
+- Only the GOPATH's first entry's `bin/` is copied when GOPATH is a list (as `go install` uses it).
+- Private modules (`GOPRIVATE`, `GONOPROXY`) that aren't in the seed are fetched directly, as on
+  the host, but the container has no SSH keys or `~/.netrc`, so that fails.
 - OAuth logins that redirect to `localhost` on the host don't reach the container. Use a device
   code flow or an API key where the agent offers one.
 - The agent's config directory is shared with the host install of the same agent (by design: one

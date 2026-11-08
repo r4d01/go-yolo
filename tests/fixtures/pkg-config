@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub pkg-config: `pkg-config --variable pc_path pkg-config` prints $PC_PATH_FIXTURE.
+set -euo pipefail
+[[ $* == '--variable pc_path pkg-config' ]] && printf '%s\n' "${PC_PATH_FIXTURE:?}"

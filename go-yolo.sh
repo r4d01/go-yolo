@@ -9,7 +9,7 @@ set -euo pipefail
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(dirname "$SELF")"
 AGENTS=(claude codex vibe opencode shell)
-PACKS=(host)
+PACKS=(host go)
 
 # shellcheck source=lib/ui.sh
 source "$REPO_DIR/lib/ui.sh"
@@ -41,6 +41,8 @@ source "$REPO_DIR/lib/prune.sh"
 source "$REPO_DIR/lib/parity.sh"
 # shellcheck source=packs/host.sh
 source "$REPO_DIR/packs/host.sh"
+# shellcheck source=packs/go.sh
+source "$REPO_DIR/packs/go.sh"
 
 ui_set_color auto
 parse_args "$@"            # exits for --help, --prune and the alias commands
@@ -54,7 +56,6 @@ ensure_state_dir           # .go-yolo/
 # More mounts. Explicit ones come first: the first mode given for a path wins.
 add_user_mounts
 add_git_config_mounts
-add_go_mounts
 add_tool_mounts
 load_agent_profile
 add_agent_mounts
@@ -69,6 +70,7 @@ if ((!DRY_RUN)); then
   confirm_plan
 fi
 choose_project_image
+add_plan_mounts            # the plan's caches, seeds and read-only mounts
 if ((PARITY)); then prepare_parity; fi   # probes instead of an agent
 
 set_network_args

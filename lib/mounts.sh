@@ -64,13 +64,15 @@ csv_field() {
   fi
 }
 
-# add_mount PATH rw|ro — bind PATH at the same path in the container. The first mode
-# given for a path wins.
+# add_mount PATH rw|ro [SOURCE] — bind PATH at the same path in the container; or, with
+# SOURCE, bind SOURCE there (a project cache at the host's cache path, for example). The first
+# mode given for a path wins.
 add_mount() {
-  local path=$1 mode=$2 spec real
+  local path=$1 mode=$2 source=${3:-$1} spec real
   validate_mount_path "$path"
+  validate_mount_path "$source"
   # Resolve the source before lexical normalization: symlink/.. follows the symlink first.
-  real="$(realpath -m -- "$path")"
+  real="$(realpath -m -- "$source")"
   path="$(realpath -ms -- "$path")"
   [[ -z ${MOUNTED[$path]:-} ]] || return 0
   MOUNTED[$path]=$mode

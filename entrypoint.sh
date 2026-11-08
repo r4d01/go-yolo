@@ -129,9 +129,7 @@ done
 # ---------------------------------------------------------------------------
 
 AGENT_PATH=$PATH
-if [[ -n ${GOPATH:-} ]]; then AGENT_PATH="${GOPATH%%:*}/bin:$AGENT_PATH"; fi
-if [[ -n ${GOROOT:-} ]]; then AGENT_PATH="$GOROOT/bin:$AGENT_PATH"; fi
-# Host toolchains mounted by the launcher (GOYOLO_TOOLS).
+# The plan's toolchains and tools (and GOYOLO_TOOLS), first on PATH as on the host.
 if [[ -n ${GOYOLO_TOOL_PATH:-} ]]; then AGENT_PATH="$GOYOLO_TOOL_PATH:$AGENT_PATH"; fi
 unset GOYOLO_TOOL_PATH
 

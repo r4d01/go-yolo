@@ -7,8 +7,8 @@ trap 'rm -rf -- "$TEST_DIR"' EXIT
 TEST_HOME="$TEST_DIR/home"
 mkdir -p "$TEST_DIR/bin" "$TEST_HOME"/{bin,project/nested/deeper,go/pkg/mod,cache,toolchain,links,.gradle,.m2} \
   "$TEST_DIR/jdk/bin" "$TEST_DIR/java-config" "$TEST_HOME/with spaces"
-cp "$REPO_DIR/tests/fixtures/"{go,docker,apt-cache,dpkg-query} "$TEST_DIR/bin/"
-chmod +x "$TEST_DIR/bin/"{go,docker,apt-cache,dpkg-query}
+cp "$REPO_DIR/tests/fixtures/"{go,docker,apt-cache,dpkg-query,dpkg,pkg-config} "$TEST_DIR/bin/"
+chmod +x "$TEST_DIR/bin/"{go,docker,apt-cache,dpkg-query,dpkg,pkg-config}
 mkdir -p "$TEST_DIR/ca/corp"
 printf 'not really a certificate\n' >"$TEST_DIR/ca/corp/root.crt"
 cp "$REPO_DIR/tests/fixtures/go" "$TEST_DIR/jdk/bin/java"
@@ -29,7 +29,7 @@ launch() (
   cd "${LAUNCH_DIR:-$TEST_HOME/project}"
   env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" \
     GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1 \
-    GOYOLO_TOOLS="${TEST_TOOLS-}" GOYOLO_GOPATH_MODE="${TEST_GOPATH_MODE-rw}" \
+    GOYOLO_TOOLS="${TEST_TOOLS-}" GOPROXY=https://proxy.example.com,direct \
     GOYOLO_MOUNTS="${TEST_MOUNTS-}" GRADLE_USER_HOME="${TEST_GRADLE_HOME-$TEST_HOME/.gradle}" \
     JAVA_HOME="${TEST_JAVA_HOME-}" GOROOT="${TEST_GOROOT-$TEST_HOME/toolchain}" \
     GOPATH="${TEST_GOPATH-$TEST_HOME/go}" GOCACHE="${TEST_GOCACHE-$TEST_HOME/cache}" \
@@ -37,6 +37,7 @@ launch() (
     DOCKER_TEST_LOG="$TEST_DIR/docker.log" DOCKER_TEST_IMAGE_STATUS="${TEST_IMAGE_STATUS-0}" \
     TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$REPO_DIR/tests/fixtures/apt-policy" \
     DPKG_HOST_FIXTURE="${TEST_DPKG_HOST-}" DPKG_BASE_FIXTURE="$REPO_DIR/tests/fixtures/dpkg-base" \
+    DPKG_S_FIXTURE="$TEST_DIR/dpkg-S" PC_PATH_FIXTURE="$TEST_DIR/pc" \
     DOCKER_TEST_IMAGES="$TEST_DIR/images" GOYOLO_LOCALES_SUPPORTED="$REPO_DIR/tests/fixtures/locales-supported" \
     "${TEST_ENV[@]}" "$REPO_DIR/go-yolo.sh" "$@"
 )
@@ -44,7 +45,7 @@ TEST_ENV=()   # extra VAR=value settings for launch
 reject() {
   local output
   if output="$(launch --dry-run "$@" 2>&1)"; then fail "accepted unsafe mount: $*"; fi
-  [[ $output == *'refusing to mount'* ]] || fail "unexpected error: $output"
+  [[ $output == *'refusing to '* ]] || fail "unexpected error: $output"
 }
 dry_run() {
   local output line arg
@@ -64,12 +65,7 @@ assert_mount() {
   fail "missing mount: $expected"
 }
 
-TEST_GOPATH="$TEST_HOME" reject shell
 TEST_TOOLS=gradle TEST_GRADLE_HOME="$TEST_HOME" reject shell
-TEST_GOCACHE="$TEST_HOME" reject shell
-TEST_GOPATH_MODE=modcache TEST_GOMODCACHE="$TEST_HOME" reject shell
-TEST_GOROOT=/usr reject shell
-TEST_GOPATH="$TEST_HOME/links/home" reject shell
 TEST_TOOLS=gradle TEST_GRADLE_HOME="$TEST_HOME/links/home" reject shell
 pass 'automatic mounts reject home directories, system roots, and symlink aliases'
 
@@ -77,7 +73,6 @@ for path in /run /dev /proc /sys /run/lock /dev/null /proc/self/status /sys/kern
   if [[ -e $path ]]; then reject --mount "$path" shell; fi
 done
 reject --mount "$TEST_HOME/links/run" shell
-TEST_GOCACHE=/proc reject shell
 pass 'sensitive system trees and aliases are refused'
 
 for path in /usr/bin/env /bin/bash /etc/passwd /etc/profile.d /usr/lib; do
@@ -129,8 +124,6 @@ pass 'agent configuration mounts use the common safety checks'
 dry_run --mount "$TEST_HOME/with spaces" --mount "$TEST_HOME/.m2:ro" shell
 assert_mount "$TEST_HOME/with spaces" "$TEST_HOME/with spaces" ro
 assert_mount "$TEST_HOME/project" "$TEST_HOME/project" rw
-assert_mount "$TEST_HOME/go" "$TEST_HOME/go" rw
-assert_mount "$TEST_HOME/cache" "$TEST_HOME/cache" rw
 TEST_TOOLS='mvn gradle' dry_run --mount "$TEST_HOME/.m2:ro" --mount "$TEST_HOME/.gradle:ro" shell
 assert_mount "$TEST_HOME/.m2" "$TEST_HOME/.m2" ro
 assert_mount "$TEST_HOME/.gradle" "$TEST_HOME/.gradle" ro
@@ -285,19 +278,19 @@ plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
 expect_plan() {
   [[ $plan_text == *"$1"* ]] || fail "plan lacks '$1':"$'\n'"$plan_text"
 }
-expect_plan 'package  libfoo-dev=1.0-1 (extra)'
-expect_plan "package  libold-dev=1.0-1+deb13u1 (extra)  ⚠ the host has 1.0-1, an older version"
-expect_plan 'protobuf-compiler=3.21.12-11 (extra)  ⚠ not installed on the host'
-expect_plan "vendor-tool=2.0-1 (extra)  ⚠ not installed: the host's version isn't in the debian archive"
-expect_plan "libbpo-dev=5.0-1~bpo13+1 (extra)  ⚠ not installed: the host's version isn't in the debian archive"
-expect_plan 'no-such-package (extra)  ⚠ no such apt package'
-expect_plan 'libx11-dev (extra)  excluded in .go-yolo/config'
-expect_plan "cert     $TEST_DIR/ca/corp/root.crt"
-expect_plan 'env      TZ=Europe/Prague'
-expect_plan 'env      NO_PROXY=localhost'
-expect_plan 'env      HTTPS_PROXY  not passed: looks like a secret (to pass it: extra env HTTPS_PROXY)'
-expect_plan 'env      API_TOKEN (extra)  value not shown'
-expect_plan 'NOT_SET_ANYWHERE (extra)  not passed: not set on the host'
+expect_plan 'package   libfoo-dev=1.0-1 [extra]'
+expect_plan "package   libold-dev=1.0-1+deb13u1 [extra]  ⚠ the host has 1.0-1, an older version"
+expect_plan 'protobuf-compiler=3.21.12-11 [extra]  ⚠ not installed on the host'
+expect_plan "vendor-tool=2.0-1 [extra]  ⚠ not installed: the host's version isn't in the debian archive"
+expect_plan "libbpo-dev=5.0-1~bpo13+1 [extra]  ⚠ not installed: the host's version isn't in the debian archive"
+expect_plan 'no-such-package [extra]  ⚠ no such apt package'
+expect_plan 'libx11-dev [extra]  excluded in .go-yolo/config'
+expect_plan "cert      $TEST_DIR/ca/corp/root.crt"
+expect_plan 'env       TZ=Europe/Prague'
+expect_plan 'env       NO_PROXY=localhost'
+expect_plan 'env       HTTPS_PROXY  not passed: looks like a secret (to pass it: extra env HTTPS_PROXY)'
+expect_plan 'env       API_TOKEN [extra]  value not shown'
+expect_plan 'NOT_SET_ANYWHERE [extra]  not passed: not set on the host'
 [[ $plan_text != *s3cr3t* && $plan_text != *user:pw* ]] || fail 'the plan shows a secret value'
 [[ ! -e $STATE/plan ]] || fail 'a dry run confirmed the plan'
 pass 'the plan resolves packages, certificates and env, and never shows secrets'
@@ -332,12 +325,12 @@ for arg in "${ARGS[@]}"; do [[ $arg != *s3cr3t* ]] || fail 'a secret value is on
 printf '%s\n' "${ARGS[@]}" | grep -qxF API_TOKEN || fail 'API_TOKEN is not passed by name'
 TEST_ENV=(API_TOKEN=rotated HTTPS_PROXY=http://user:pw@proxy.example:3128 NO_PROXY=localhost)
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
-expect_plan '~ env      API_TOKEN (extra)  value not shown; value changed'
+expect_plan '~ env       API_TOKEN [extra]  value not shown; value changed'
 dry_run shell
 [[ ${ARGS[-1]} == "$image_before" ]] || fail 'a runtime-only change changed the image'
 printf 'extra package libfoo-dev\n' >"$CONFIG"
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
-expect_plan '- package  libold-dev'
+expect_plan '- package   libold-dev'
 dry_run shell
 [[ ${ARGS[-1]} != "$image_before" ]] || fail 'a package change kept the image'
 pass 'changes are shown as a diff; only build-time changes change the image'
@@ -355,10 +348,10 @@ pass '.go-yolo/config errors name the file and line'
 # same, tini isn't on the host, "removed" was removed from the host (status rc).
 TEST_DPKG_HOST="$REPO_DIR/tests/fixtures/dpkg-host"
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
-expect_plan 'parity   zlib1g=1:1.3-1+deb13u1  ⚠ the base image has this newer version, the host has 1:1.3-1 (apt upgrade the host to match)'
-expect_plan 'parity   tzdata=2026e-1  ⚠ the base image has this older version, the host has 2026f-1 (go-yolo.sh --rebuild updates the base image)'
+expect_plan 'parity    zlib1g=1:1.3-1+deb13u1  ⚠ the base image has this newer version, the host has 1:1.3-1 (apt upgrade the host to match)'
+expect_plan 'parity    tzdata=2026e-1  ⚠ the base image has this older version, the host has 2026f-1 (go-yolo.sh --rebuild updates the base image)'
 for name in libc6 tini removed only-on-host; do
-  [[ $plan_text != *"parity   $name="* ]] || fail "parity warning for $name"
+  [[ $plan_text != *"parity    $name="* ]] || fail "parity warning for $name"
 done
 pass 'base image packages whose version differs from the host are warnings in the plan'
 
@@ -368,7 +361,7 @@ rm -f "$STATE/plan" "$TEST_DIR/docker.log.built"
 cp /dev/null "$TEST_DIR/docker.log"
 output="$(TEST_IMAGE_STATUS=built-on-build launch --yes shell 2>&1 >/dev/null)"
 [[ $output == *'plan for '*'(new;'* ]] || fail "first run did not show the new plan: $output"
-[[ $output == *'+ parity   zlib1g=1:1.3-1+deb13u1'* ]] || fail "the base comparison was not shown as a change: $output"
+[[ $output == *'+ parity    zlib1g=1:1.3-1+deb13u1'* ]] || fail "the base comparison was not shown as a change: $output"
 grep -q '^parity	host	check	zlib1g	' "$STATE/plan" || fail 'the confirmed plan lacks the base comparison'
 [[ $(grep -c '^build$' "$TEST_DIR/docker.log") == 2 ]] || fail 'expected a base and a project build'
 rm -f "$TEST_DIR/docker.log.built" "$STATE/plan"
@@ -384,12 +377,12 @@ mkdir -p "$STATE"
 printf 'exclude locale cs_CZ.UTF-8\n' >"$STATE/config"
 TEST_ENV=(LANG=en_US.utf8 LC_TIME=sr_RS@latin LC_PAPER=xx_XX.UTF-8 LC_MONETARY=cs_CZ.UTF-8 LC_NUMERIC=C)
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
-expect_plan 'package  locales=2.41-12'
-expect_plan 'locale   en_US.utf8'
-expect_plan 'locale   sr_RS@latin'
-expect_plan "locale   xx_XX.UTF-8  ⚠ not generated: not in the host's list of supported locales"
-expect_plan 'locale   cs_CZ.UTF-8  excluded in .go-yolo/config'
-[[ $plan_text != *'locale   C'* ]] || fail 'the built-in C locale was planned'
+expect_plan 'package   locales=2.41-12'
+expect_plan 'locale    en_US.utf8'
+expect_plan 'locale    sr_RS@latin'
+expect_plan "locale    xx_XX.UTF-8  ⚠ not generated: not in the host's list of supported locales"
+expect_plan 'locale    cs_CZ.UTF-8  excluded in .go-yolo/config'
+[[ $plan_text != *'locale    C'* ]] || fail 'the built-in C locale was planned'
 dry_run shell
 for expected in "GOYOLO_UMASK=$(umask)" LANG LC_TIME LC_PAPER; do
   printf '%s\n' "${ARGS[@]}" | grep -qxF -- "$expected" || fail "the docker command lacks $expected"
@@ -404,10 +397,86 @@ dockerfile="$(cat "$STATE/build/Dockerfile")"
 
 printf 'exclude package locales\n' >"$STATE/config"
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
-expect_plan "locale   en_US.utf8  ⚠ not generated: the locales package isn't in the plan"
+expect_plan "locale    en_US.utf8  ⚠ not generated: the locales package isn't in the plan"
 rm -rf -- "$STATE"
 TEST_ENV=()
 pass "the host's locales are generated in the image; umask and locale variables are passed"
+
+# --- Go ---------------------------------------------------------------------
+
+GO_PROJECT="$TEST_HOME/project"
+mkdir -p "$TEST_HOME/go/bin" "$TEST_HOME/go/pkg/mod/cache/download" "$TEST_HOME/toolchain/bin" "$TEST_DIR/pc"
+: >"$TEST_HOME/go/bin/gopls"
+printf 'module example.com/p\n\ngo 1.99\n' >"$GO_PROJECT/go.mod"
+rm -rf -- "$STATE"
+
+TEST_GOCACHE="$TEST_HOME" reject shell
+TEST_GOMODCACHE="$TEST_HOME" reject shell
+TEST_GOMODCACHE="$TEST_HOME/links/home" reject shell
+TEST_GOCACHE=/proc reject shell
+TEST_GOROOT=/usr reject shell
+pass 'Go caches and toolchains at system or home directories (or aliases) are refused'
+
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan "toolchain $TEST_HOME/toolchain (go1.99.0) [go]  owned by you, as on the host"
+expect_plan "tools     $TEST_HOME/go/bin (1 files, "
+expect_plan "cache     $TEST_HOME/go/pkg/mod ← .go-yolo/cache/go-mod [go]"
+expect_plan "cache     $TEST_HOME/cache ← .go-yolo/cache/go-build [go]"
+expect_plan "seed      $TEST_HOME/go/pkg/mod/cache/download (read-only, as /var/cache/go-yolo/seed/go-mod) [go]"
+expect_plan 'env       GOPROXY=file:///var/cache/go-yolo/seed/go-mod,https://proxy.example.com,direct [go]  set by go-yolo'
+expect_plan 'domain    proxy.example.com [go]'
+expect_plan 'domain    sum.golang.org [go]'
+[[ $plan_text != *GOBIN* ]] || fail 'GOBIN was passed although the host does not set it'
+
+dry_run shell
+assert_mount "$STATE/cache/go-mod" "$TEST_HOME/go/pkg/mod" rw
+assert_mount "$STATE/cache/go-build" "$TEST_HOME/cache" rw
+assert_mount "$TEST_HOME/go/pkg/mod/cache/download" /var/cache/go-yolo/seed/go-mod ro
+for arg in "${ARGS[@]}"; do
+  case $arg in
+    *"source=$TEST_HOME/go,"*|*"source=$TEST_HOME/go/pkg/mod,"*|*"source=$TEST_HOME/cache,"*|*"source=$TEST_HOME/toolchain,"*)
+      fail "a host Go directory is mounted: $arg" ;;
+  esac
+done
+printf '%s\n' "${ARGS[@]}" | grep -qxF "GOYOLO_TOOL_PATH=$TEST_HOME/toolchain/bin:$TEST_HOME/go/bin" \
+  || fail 'the Go toolchain and tools are not first on PATH'
+printf '%s\n' "${ARGS[@]}" | grep -qxF 'GOPROXY=file:///var/cache/go-yolo/seed/go-mod,https://proxy.example.com,direct' \
+  || fail 'GOPROXY does not start with the seed'
+pass 'Go: caches are project-local at the host paths; the host module cache is only a read-only seed'
+
+cp /dev/null "$TEST_DIR/docker.log"
+TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
+dockerfile="$(cat "$STATE/build/Dockerfile")"
+[[ $dockerfile == *"COPY --from=copy1 --chown=$(id -u):$(id -g) [\"/\", \"$TEST_HOME/toolchain/\"]"* ]] \
+  || fail "the toolchain is not copied with your ownership: $dockerfile"
+[[ $dockerfile == *"COPY --from=copy2 --chown=$(id -u):$(id -g) [\"/\", \"$TEST_HOME/go/bin/\"]"* ]] \
+  || fail 'the Go tools are not copied'
+[[ $dockerfile == *"RUN install -d -o $(id -u) -g $(id -g) -m "*" $TEST_HOME/go"$'\n'* ]] \
+  || fail 'the parents of copied directories are not created with your ownership'
+grep -qxF -- "copy1=$TEST_HOME/toolchain" "$TEST_DIR/docker.log" && grep -qxF -- "copy2=$TEST_HOME/go/bin" "$TEST_DIR/docker.log" \
+  || fail 'the copied directories are not passed as build contexts'
+[[ -d $STATE/cache/go-mod && -d $STATE/cache/go-build ]] || fail 'the project caches were not created'
+pass 'Go: GOROOT and GOBIN are copied into the image at the same paths, with the host ownership'
+
+# cgo: "// #cgo pkg-config: sqlite3" → the package owning sqlite3.pc, plus pkg-config's own.
+printf '// #cgo pkg-config: sqlite3 --static\nimport "C"\n' >"$GO_PROJECT/db.go"
+: >"$TEST_DIR/pc/sqlite3.pc"
+printf 'libsqlite3-dev: %s\npkgconf-bin: %s\n' "$TEST_DIR/pc/sqlite3.pc" "$TEST_DIR/bin/pkg-config" >"$TEST_DIR/dpkg-S"
+# A go.work in a parent directory, using the repository and a module beside it.
+mkdir -p "$TEST_HOME/shared"
+: >"$TEST_HOME/go.work"
+TEST_ENV=(GOWORK="$TEST_HOME/go.work" GO_TEST_WORK_JSON='{"Use": [{"DiskPath": "./project"}, {"DiskPath": "./shared"}]}'
+          GOYOLO_GOPATH_MODE=rw)
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan 'package   libsqlite3-dev=3.46.1-2 [go]'
+expect_plan 'package   pkgconf-bin=1.8.1-4 [go]'
+expect_plan "mount     $TEST_HOME/go.work (read-only) [go]  ⚠ outside the repository: read-only in the container"
+expect_plan "mount     $TEST_HOME/shared (read-only) [go]  ⚠ outside the repository"
+[[ $plan_text != *"mount     $GO_PROJECT "* ]] || fail 'the repository itself was planned as a go.work mount'
+expect_plan 'GOYOLO_GOPATH_MODE is no longer used'
+rm -rf -- "$STATE" "$GO_PROJECT/go.mod" "$GO_PROJECT/db.go" "$TEST_HOME/go.work"
+TEST_ENV=()
+pass 'Go: cgo pkg-config libraries, and a go.work outside the repository, are planned'
 
 # --- --prune ----------------------------------------------------------------
 
@@ -453,7 +522,7 @@ mkdir -p "$STATE"
 printf 'extra env API_TOKEN\n' >"$STATE/config"
 TEST_ENV=(DOCKER_TEST_RUN_SCRIPT=1 API_TOKEN=s3cr3t-value)
 output="$(launch --yes --parity 2>&1)" || fail "--parity found differences where there are none: $output"
-for probe in user home directory umask architecture glibc 'time zone' 'tool git' 'env TZ' \
+for probe in user home directory umask architecture glibc 'time zone' 'tool git' \
   "cert $TEST_DIR/ca/corp/root.crt"; do
   [[ $output == *"✓ $probe "* ]] || fail "--parity lacks a matching '$probe' probe: $output"
 done

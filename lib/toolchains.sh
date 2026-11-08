@@ -1,54 +1,18 @@
 # shellcheck shell=bash
-# Host toolchains mounted into the container: Go, and the tools listed in GOYOLO_TOOLS.
+# Host toolchains mounted into the container: the tools listed in GOYOLO_TOOLS.
 #
-# (docs/PLAN.md replaces these mounts with toolchains copied into a per-project image:
-# Go in phase 1, GOYOLO_TOOLS in phase 4.)
+# (docs/PLAN.md replaces these mounts with toolchains copied into the project image, as the Go
+# pack already does; GOYOLO_TOOLS goes in phase 4.)
 #
-# Sets: GO_ENV    docker run -e arguments for the Go toolchain
-#       TOOL_ENV  docker run -e arguments for the GOYOLO_TOOLS toolchains
+# Sets: TOOL_ENV          docker run -e arguments for the GOYOLO_TOOLS toolchains
+#       LEGACY_TOOL_PATH  their bin/ directories, for PATH (see tool_path in lib/run.sh)
 
-GO_ENV=()
 TOOL_ENV=()
+LEGACY_TOOL_PATH=""
 
 # Cache directories (newline-separated) mounted read-write for each listed tool, even when the
 # tool itself isn't installed, so ./mvnw and ./gradlew projects reuse them too.
 declare -A TOOL_CACHES=()
-
-# Go toolchain (GOROOT, read-only) and its caches, as the host's `go env` reports them.
-add_go_mounts() {
-  if ! command -v go >/dev/null 2>&1; then
-    warn "go not found on PATH; starting without the Go toolchain"
-    return 0
-  fi
-
-  local go_vars goroot gopath gocache gomodcache goenv_file mode
-  mapfile -t go_vars < <(go env GOROOT GOPATH GOCACHE GOMODCACHE GOENV)
-  goroot=${go_vars[0]:-}
-  gopath=${go_vars[1]%%:*}   # only the first entry of a GOPATH list
-  gocache=${go_vars[2]:-}
-  gomodcache=${go_vars[3]:-}
-  goenv_file=${go_vars[4]:-}
-  mode=${GOYOLO_GOPATH_MODE:-rw}
-
-  if [[ -d $goroot ]]; then add_mount "$goroot" ro; fi
-  case $mode in
-    rw|ro)
-      if [[ -d $gopath ]]; then add_mount "$gopath" "$mode"; fi
-      if [[ -d $gomodcache ]] && ! is_under "$gomodcache" "$gopath"; then
-        add_mount "$gomodcache" "$mode"
-      fi
-      ;;
-    modcache)
-      if [[ -d $gomodcache ]]; then add_mount "$gomodcache" rw; fi
-      ;;
-    *) die "invalid GOYOLO_GOPATH_MODE '$mode' (use rw, ro or modcache)" ;;
-  esac
-  if [[ -d $gocache ]]; then add_mount "$gocache" rw; fi
-  if [[ -f $goenv_file ]]; then add_mount "$goenv_file" ro; fi
-
-  GO_ENV=(-e "GOROOT=$goroot" -e "GOPATH=${go_vars[1]}" -e "GOCACHE=$gocache" -e "GOMODCACHE=$gomodcache")
-  if [[ -f $goenv_file ]]; then GO_ENV+=(-e "GOENV=$goenv_file"); fi
-}
 
 # tool_home NAME — print the install dir of tool NAME: the parent of the bin/ directory its
 # executable resolves into. Fails if the tool isn't found or has no such layout.
@@ -101,7 +65,7 @@ add_tool_mounts() {
   done
 
   # The entrypoint puts these first on PATH, after it has dropped privileges.
-  if [[ -n $tool_path ]]; then TOOL_ENV+=(-e "GOYOLO_TOOL_PATH=$tool_path"); fi
+  LEGACY_TOOL_PATH=$tool_path
   if [[ -n ${GRADLE_USER_HOME:-} && " ${tool_names[*]} " == *" gradle "* ]]; then
     TOOL_ENV+=(-e "GRADLE_USER_HOME=$GRADLE_USER_HOME")
   fi

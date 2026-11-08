@@ -315,7 +315,16 @@ Done when: a project without any language markers gets a confirmed plan, a proje
 (base + CAs + extra packages + env), the hidden `.go-yolo/`, and `--parity` shows no unexpected
 differences. Changing a host package version shows a diff and rebuilds after confirmation.
 
-### Phase 1 — Go
+### Phase 1 — Go — done
+
+Implemented as `packs/go.sh`, with new generic plan items (`toolchain`/`tools` copies via named
+build contexts with host ownership, `link`, `mount`, `cache`, `seed`, `domain`) and values go-yolo
+sets itself passed as `-e NAME=VALUE` (flag `derived`). Checked on a real module: `--parity`
+reports all 48 probes matching, `go run` works offline (`--net none`) from the seed, and the
+host's `~/go` and `~/.cache/go-build` stay untouched. Decided: a `go.work` outside the repository,
+and the modules it uses outside it, are mounted read-only with a warning (add `--mount DIR:rw` to
+change them). Known gap: private modules missing from the seed are fetched directly and fail
+without credentials (`~/.netrc` opt-in comes later).
 
 - Detect: `go.mod`, `go.work`.
 - Resolve: `go env GOROOT GOVERSION GOTOOLCHAIN GOENV GOWORK GOMODCACHE GOCACHE GOPATH`.

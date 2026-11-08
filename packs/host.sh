@@ -109,7 +109,7 @@ host_probe() {
   while IFS= read -r line; do
     printf 'locale %s\t%s\n' "${line%%=*}" "${line#*=}"
   done < <(locale 2>&1)
-  printf 'time zone\t%s (%s)\n' "${TZ:-(unset)}" "$(date +%Z%z)"
+  printf 'time zone\t%s\n' "$(date '+%Z %z')"
   for tool in gcc make git python3; do
     version="(missing)"
     if command -v "$tool" >/dev/null 2>&1; then version="$("$tool" --version 2>&1 | head -n 1)"; fi
@@ -121,6 +121,8 @@ host_probe() {
     if [[ $method == skip ]]; then continue; fi
     case $kind in
       env)
+        # Values go-yolo sets itself are checked by their effect (time zone, go env, ...).
+        if [[ $flags == derived ]]; then continue; fi
         if [[ $value == sha256:* ]]; then
           printf 'env %s\tsha256:%s\n' "$name" "$(printf '%s' "${!name-}" | sha256sum | cut -c1-12)"
         else
