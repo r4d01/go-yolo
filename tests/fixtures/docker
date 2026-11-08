@@ -12,6 +12,17 @@ if [[ $1 == build ]]; then
     if [[ ${args[i]} == -t ]]; then printf '%s\n' "${args[i + 1]}" >>"$DOCKER_TEST_LOG.built"; fi
   done
 fi
+# The image list for --prune: $DOCKER_TEST_IMAGES holds tag, id, age, size, project, plan.
+if [[ $* == image\ ls\ * ]]; then
+  if [[ -n ${DOCKER_TEST_IMAGES:-} ]]; then cut -f1-4 "$DOCKER_TEST_IMAGES"; fi
+  exit 0
+fi
+if [[ $* == image\ inspect\ --format\ *go-yolo.project* ]]; then
+  for tag in "${@:4}"; do
+    awk -F'\t' -v tag="$tag" '$1 == tag { print $5 "\t" $6 }' "$DOCKER_TEST_IMAGES"
+  done
+  exit 0
+fi
 if [[ $* == image\ inspect\ * ]]; then
   status=${DOCKER_TEST_IMAGE_STATUS:-0}
   if [[ $status == built-on-build ]]; then

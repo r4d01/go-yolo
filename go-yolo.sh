@@ -35,11 +35,13 @@ source "$REPO_DIR/lib/toolchains.sh"
 source "$REPO_DIR/lib/agent.sh"
 # shellcheck source=lib/run.sh
 source "$REPO_DIR/lib/run.sh"
+# shellcheck source=lib/prune.sh
+source "$REPO_DIR/lib/prune.sh"
 # shellcheck source=packs/host.sh
 source "$REPO_DIR/packs/host.sh"
 
 ui_set_color auto
-parse_args "$@"            # exits for --help and the alias commands
+parse_args "$@"            # exits for --help, --prune and the alias commands
 detect_host
 choose_base_image
 

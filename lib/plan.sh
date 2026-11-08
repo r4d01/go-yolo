@@ -183,7 +183,7 @@ plan_env() {
 
 # Sort PLAN (base, packages, certs, env; then by name) and compute PLAN_HASH.
 plan_finish() {
-  local line kind rank build_lines=""
+  local line kind rank
   local ranked=()
   for line in "${PLAN[@]}"; do
     kind=${line%%$'\t'*}
@@ -191,11 +191,26 @@ plan_finish() {
     ranked+=("$rank"$'\t'"$line")
   done
   mapfile -t PLAN < <(printf '%s\n' "${ranked[@]}" | LC_ALL=C sort -t $'\t' -k1,1n -k5,5 | cut -f2-)
+  PLAN_HASH="$(plan_build_hash "${PLAN[@]}")"
+}
 
-  for line in "${PLAN[@]}"; do
+# plan_build_hash LINE... — hash of the lines that go into the image (8 hex digits).
+plan_build_hash() {
+  local line build_lines=""
+  for line in "$@"; do
     if is_build_line "$line"; then build_lines+="$line"$'\n'; fi
   done
-  PLAN_HASH="$(printf '%s' "$build_lines" | sha256sum | cut -c1-8)"
+  printf '%s' "$build_lines" | sha256sum | cut -c1-8
+}
+
+# confirmed_plan_hash DIR — the build hash of DIR's confirmed plan; nothing if it has none.
+confirmed_plan_hash() {
+  local file="$1/.go-yolo/plan" line lines=()
+  [[ -f $file ]] || return 0
+  while IFS= read -r line; do
+    if [[ -n $line && $line != '#'* ]]; then lines+=("$line"); fi
+  done <"$file"
+  plan_build_hash "${lines[@]}"
 }
 
 # True if LINE goes into the image (as opposed to runtime settings and skipped items).

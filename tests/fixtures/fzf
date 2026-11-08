@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub fzf: "picks" the input lines that contain $FZF_TEST_PICK.
+set -euo pipefail
+grep -F -- "${FZF_TEST_PICK:?}" || true

@@ -35,7 +35,8 @@ env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put
          GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
                                      version pins for the image build (use with --rebuild)
 
-alias commands (no agent needed):
+commands (no agent needed):
+./go-yolo.sh --prune [--yes]         list go-yolo images, remove stale ones (--yes: without asking)
 ./go-yolo.sh --print-aliases         print alias definitions to stdout
 ./go-yolo.sh --install-aliases       add the aliases to your shell rc file(s)
 ./go-yolo.sh --uninstall-aliases     remove them again
@@ -447,7 +448,25 @@ The base image is tagged `go-yolo-base:<distro>-<codename>-<hash>` (plus
 `agents/`, `firewall/` and `tmux/`, so editing any of them triggers a rebuild. A new base changes
 every project's plan, so each project shows the change and rebuilds its image on its next run.
 `--rebuild` rebuilds both images without the build cache. Old images are not deleted
-automatically: `docker image ls 'go-yolo*'`.
+automatically; `go-yolo.sh --prune` lists them:
+
+```
+go-yolo: images (✓ in use, ✗ stale):
+  ✓ go-yolo-base:debian-trixie                     2.4GB  2 hours ago        points to the newest base image
+  ✓ go-yolo-base:debian-trixie-5a5324ec            2.4GB  2 hours ago        the base image of this go-yolo version
+  ✗ go-yolo-base:debian-trixie-3c23a8bf            2.3GB  3 days ago         an older base image
+  ✓ go-yolo:myapp-d0c6fbb2-a02bf713                2.4GB  2 hours ago        /home/me/src/myapp
+  ✗ go-yolo:myapp-d0c6fbb2-77e1c2a9                2.4GB  3 days ago         an older plan of /home/me/src/myapp
+  ✗ go-yolo:oldapp-1b2c3d4e-5f6a7b8c               2.4GB  2 weeks ago        project is gone: /home/me/src/oldapp
+go-yolo: remove the 3 ✗ images? [y]es [n]o [p]ick:
+```
+
+An image is current if it is the base image of this go-yolo version, or a project's image for
+its confirmed plan. `p` lets you pick what to remove (with fzf if it is installed, otherwise one
+y/n question per image), current images included. Without a terminal `--prune` only lists;
+`--prune --yes` removes the stale images without asking. Images a running container uses can't be
+removed; `--prune` says so and goes on. Cached package lists of removed base images are deleted
+too.
 
 ## Code layout
 
@@ -467,6 +486,7 @@ automatically: `docker image ls 'go-yolo*'`.
 | `lib/toolchains.sh` | Go and `GOYOLO_TOOLS` host toolchain mounts                        |
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
+| `lib/prune.sh`      | `--prune`: image status, removal                                   |
 | `packs/host.sh`     | plan items every project gets (base, CAs, time zone, proxies, extras) |
 
 Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)

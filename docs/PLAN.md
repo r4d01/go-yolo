@@ -290,7 +290,8 @@ Done so far: `.go-yolo/` and the project checks; the plan with diff, confirmatio
 `go-yolo-base:…` and the generated project image; packages (rule 4), CAs, time zone, proxies,
 extra env; `parity` warnings for base image packages whose version differs from the host's
 (the base is built after the first confirmation, then the plan is resolved and confirmed again
-before the project image). Still to do: fzf editing, `--parity`, `--prune`, the agent picker. Named contexts and
+before the project image). `--prune` (with the first fzf helper, `ui_pick_many`). Still to do: fzf editing, `--parity`, the
+agent picker. Named contexts and
 ownership (`--chown`) come with the first pack that copies a toolchain (phase 1).
 
 - `lib/project.sh`: git-root check (D9), `.go-yolo/` creation and checks (3.5), tmpfs cover,

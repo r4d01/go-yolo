@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Command-line options.
 #
-# Sets: NET REBUILD YOLO USE_TMUX TMUX_FORCED DRY_RUN COLOR YES USER_MOUNTS
+# Sets: NET REBUILD YOLO USE_TMUX TMUX_FORCED DRY_RUN COLOR YES PRUNE USER_MOUNTS
 #       AGENT            the selected agent (one of AGENTS)
 #       PASSTHROUGH_ARGS everything after the agent, passed to it unchanged
 
@@ -32,7 +32,8 @@ env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put
          GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
                                      version pins for the image build (use with --rebuild)
 
-alias commands (no agent needed):
+commands (no agent needed):
+  go-yolo.sh --prune [--yes]         list go-yolo images, remove stale ones (--yes: without asking)
   go-yolo.sh --print-aliases         print alias definitions to stdout
   go-yolo.sh --install-aliases       add the aliases to your shell rc file(s)
   go-yolo.sh --uninstall-aliases     remove them again
@@ -49,6 +50,7 @@ TMUX_FORCED=0
 DRY_RUN=0
 COLOR=auto
 YES=0
+PRUNE=0
 USER_MOUNTS=()
 AGENT=""
 PASSTHROUGH_ARGS=()
@@ -75,6 +77,7 @@ parse_args() {
         COLOR=$2; shift 2 ;;
       --color=*) COLOR=${1#*=}; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      --prune) PRUNE=1; shift ;;
       -h|--help) usage; exit 0 ;;
       --print-aliases) alias_lines; exit 0 ;;
       --install-aliases) install_aliases; exit 0 ;;
@@ -85,6 +88,7 @@ parse_args() {
     esac
   done
   ui_set_color "$COLOR"
+  if ((PRUNE)); then prune_images; exit 0; fi
 
   case $NET in
     open|allowlist|none) ;;

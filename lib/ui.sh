@@ -41,6 +41,23 @@ ui_paint() {
   printf '%s%s%s' "$color" "$2" "${color:+$UI_RESET}"
 }
 
+# ui_pick_many PROMPT ITEM... — let the user pick any number of ITEMs; print the picked ones,
+# one per line. Uses fzf if it is installed, otherwise asks y/n for each item. Needs a terminal.
+ui_pick_many() {
+  local prompt=$1 item answer
+  shift
+  if command -v fzf >/dev/null 2>&1; then
+    printf '%s\n' "$@" \
+      | fzf --multi --reverse --height=50% --prompt="$prompt " \
+          --header='TAB: pick/unpick · Enter: done · Esc: pick nothing' || true
+    return 0
+  fi
+  for item in "$@"; do
+    read -r -p "$item · $prompt [y/N] " answer
+    if [[ $answer == y || $answer == yes ]]; then printf '%s\n' "$item"; fi
+  done
+}
+
 die() {
   printf '%s %s\n' "$(ui_paint red 'go-yolo: error:')" "$*" >&2
   exit 1
