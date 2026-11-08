@@ -53,7 +53,7 @@ decide_tmux() {
 }
 
 build_docker_command() {
-  local pwd_hash rand_suffix var terminfo
+  local pwd_hash rand_suffix var terminfo env_args
   pwd_hash="$(printf '%s' "$WORKDIR" | sha256sum | cut -c1-8)"
   rand_suffix="$(printf '%04x' $((RANDOM % 65536)))"
 
@@ -83,7 +83,8 @@ build_docker_command() {
     && terminfo="$(infocmp -x "$TERM" 2>/dev/null)"; then
     CMD+=(-e "GOYOLO_TERMINFO=$terminfo")
   fi
-  CMD+=("${GO_ENV[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}")
+  mapfile -t env_args < <(plan_env_args)
+  CMD+=("${env_args[@]}" "${GO_ENV[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}")
   # Hide .go-yolo/ behind an empty tmpfs that only root could write to.
   CMD+=(--mount "type=tmpfs,$(csv_field "destination=$STATE_DIR"),tmpfs-mode=0555")
   CMD+=("${NET_ARGS[@]}" "$IMAGE" "${PASSTHROUGH_ARGS[@]}")
@@ -110,7 +111,7 @@ print_banner() {
   if ((YOLO)); then yolo="$(ui_paint red ON)"; else yolo=off; fi
   if [[ $NET == open ]]; then net="$(ui_paint yellow open)"; else net="$(ui_paint green "$NET")"; fi
 
-  line="go-yolo: $AGENT in container $IMAGE · net=$net · yolo=$yolo"
+  line="go-yolo: $AGENT in container $IMAGE · plan $PLAN_HASH ($PLAN_CONFIRMED) · net=$net · yolo=$yolo"
   if ((USE_TMUX)); then line+=" · tmux"; fi
   if [[ -n $rw ]]; then line+=" · rw: $rw"; fi
   if [[ -n $ro ]]; then line+=" · ro: $ro"; fi

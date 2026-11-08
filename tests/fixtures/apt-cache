@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stub apt-cache: `apt-cache policy -- NAME...` prints the blocks of tests/fixtures/apt-policy
+# for the requested names, in the order requested (unknown names print nothing, like apt).
+set -euo pipefail
+[[ $1 == policy ]] || exit 1
+shift
+[[ ${1:-} != -- ]] || shift
+for name in "$@"; do
+  awk -v want="$name:" '/^[^ ]/ { show = ($0 == want) } show' "$APT_POLICY_FIXTURE"
+done

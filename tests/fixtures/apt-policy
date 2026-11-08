@@ -1,0 +1,36 @@
+libfoo-dev:
+  Installed: 1.0-1
+  Candidate: 1.0-1
+  Version table:
+ *** 1.0-1 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status
+libold-dev:
+  Installed: 1.0-1
+  Candidate: 1.0-1+deb13u1
+  Version table:
+     1.0-1+deb13u1 500
+        500 http://security.debian.org/debian-security trixie-security/main amd64 Packages
+ *** 1.0-1 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status
+protobuf-compiler:
+  Installed: (none)
+  Candidate: 3.21.12-11
+  Version table:
+     3.21.12-11 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+vendor-tool:
+  Installed: 2.0-1
+  Candidate: 2.0-1
+  Version table:
+ *** 2.0-1 500
+        500 https://repo.vendor.example/apt stable/main amd64 Packages
+        100 /var/lib/dpkg/status
+libbpo-dev:
+  Installed: 5.0-1~bpo13+1
+  Candidate: 5.0-1~bpo13+1
+  Version table:
+ *** 5.0-1~bpo13+1 100
+        100 http://deb.debian.org/debian trixie-backports/main amd64 Packages
+        100 /var/lib/dpkg/status

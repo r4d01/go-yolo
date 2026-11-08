@@ -15,6 +15,7 @@ anything, but outside it the agent only reaches what the launcher explicitly mou
 agents:  claude | codex | vibe | opencode | shell
 opts:    --net open|allowlist|none   (default: open)
          --rebuild                   force image rebuild
+         --yes                       use a new or changed plan without asking (never from env)
          --yolo                      turn off the agent's permission prompts (default: off)
          --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY,
                                      except for non-interactive runs such as claude -p;
@@ -132,7 +133,7 @@ The aliases use the launcher's absolute path, so they work without `~/bin` on `P
 No alias turns on YOLO mode. Launcher options go before the agent, so `gy-claude --yolo` would pass
 `--yolo` to Claude, not to the launcher. Type `go-yolo.sh --yolo claude` instead.
 
-The first run builds the image (a few minutes). Later runs start immediately.
+The first run builds the images (a few minutes). Later runs start immediately.
 
 ## Usage
 
@@ -184,6 +185,63 @@ Log in inside the container the first time (e.g. `/login` in Claude, `codex logi
 config directory is mounted from the host, so the login persists and is shared with the agent on
 the host. Codex's browser login needs a callback on `localhost:1455`, which doesn't reach the
 container, so use `codex login --device-auth` or an API key.
+
+### The plan
+
+Before anything is built, go-yolo works out a **plan**: what goes into the project's image and
+what is passed into the container. A new plan is shown in full, a changed one as a diff (`+`
+added, `-` removed, `~` changed), and you confirm it:
+
+```
+go-yolo: plan for /home/me/src/myapp (new; edit .go-yolo/config to change it):
+    base     go-yolo-base:debian-trixie-5a5324ec
+    package  libsqlite3-dev=3.46.1-3 (extra)
+    package  zlib1g-dev=1:1.3.dfsg+really1.3.1-1+deb13u1 (extra)  ⚠ the host has 1:1.3.dfsg+really1.3.1-1+b1, an older version: the image gets the archive's version (apt upgrade the host to match)
+    cert     /usr/local/share/ca-certificates/corp/root.crt
+    env      TZ=Europe/Prague
+    env      HTTPS_PROXY  not passed: looks like a secret (to pass it: extra env HTTPS_PROXY)
+go-yolo: warning: the plan has warnings (⚠); check them before you go on
+go-yolo: use this plan? [y]es [n]o [e]dit config [d]ockerfile:
+```
+
+`e` opens `.go-yolo/config` in `$VISUAL`/`$EDITOR` and shows the plan again; `d` shows the
+generated Dockerfile (also kept in `.go-yolo/build/Dockerfile`). Enter or `n` stops without
+building. An unchanged plan is not shown again. Without a terminal, a new or changed plan is never
+used: go-yolo exits with an error unless you pass `--yes`. A dry run shows the plan and goes on.
+
+What every project gets:
+
+| item | what | how |
+|------|------|-----|
+| `base` | the shared base image (OS, agents, entrypoint) | `FROM go-yolo-base:<distro>-<codename>-<hash>` |
+| `cert` | the host's extra CA certificates (`/usr/local/share/ca-certificates`) | copied to the same path, `update-ca-certificates` |
+| `env` | `TZ` (the host's time zone), proxy variables (`HTTP_PROXY`, `https_proxy`, `NO_PROXY`, ...) | passed by name with `docker run -e NAME`, never baked into the image |
+| `package` | `extra package` items from `.go-yolo/config` | `apt-get install name=version` |
+
+Packages get the **host's version**, so the container matches the host. The image never
+downgrades a package: if the host is behind the archive, the image gets the archive's newer
+version and the plan warns (`apt upgrade` the host to match). A package that isn't installed on
+the host gets a warning too, since a build that needs it works in the container but not on the
+host. Packages whose host version isn't in the distro archive (third-party repositories,
+backports) can't be installed and are left out, with a warning.
+
+Variables that look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*KEY*`, `*CREDENTIAL*`,
+`*AUTH*`, or a URL with a password) are only passed when you list them as `extra env NAME`. Their
+values are never shown or stored, only a hash, so a change is still noticed.
+
+`.go-yolo/config` holds your choices, one per line:
+
+```
+extra    package  protobuf-compiler    # also install this apt package
+extra    env      GITHUB_TOKEN         # also pass this host variable
+exclude  package  libx11-dev           # leave out an item the plan would include
+exclude  cert     /usr/local/share/ca-certificates/old.crt
+exclude  env      HTTPS_PROXY
+```
+
+The confirmed plan is stored in `.go-yolo/plan`. The project image's tag
+(`go-yolo:<project>-<path hash>-<plan hash>`) includes a hash of the plan's build-time items, so
+a change to them builds a new image; a change to `env` items only needs your confirmation.
 
 ### tmux
 
@@ -377,9 +435,12 @@ the cache. To pin versions, set any of `GOYOLO_CLAUDE_VERSION`,
 Node.js comes from nodejs.org. Its `SHASUMS256.txt` is checked against the Node.js release keys
 fetched from `github.com/nodejs/release-keys`, so a build needs both hosts reachable.
 
-Images are tagged `go-yolo:<distro>-<codename>-<hash>` (plus `go-yolo:<distro>-<codename>`). The
-hash covers the `Dockerfile`, `entrypoint.sh`, `scripts/`, `agents/`, `firewall/` and `tmux/`, so editing
-any of them triggers a rebuild. Old images are not deleted automatically: `docker image ls go-yolo`.
+The base image is tagged `go-yolo-base:<distro>-<codename>-<hash>` (plus
+`go-yolo-base:<distro>-<codename>`). The hash covers the `Dockerfile`, `entrypoint.sh`, `scripts/`,
+`agents/`, `firewall/` and `tmux/`, so editing any of them triggers a rebuild. A new base changes
+every project's plan, so each project shows the change and rebuilds its image on its next run.
+`--rebuild` rebuilds both images without the build cache. Old images are not deleted
+automatically: `docker image ls 'go-yolo*'`.
 
 ## Code layout
 
@@ -394,9 +455,12 @@ any of them triggers a rebuild. Old images are not deleted automatically: `docke
 | `lib/image.sh`      | image name, content hash and build                                 |
 | `lib/mounts.sh`     | mount safety checks; workdir, extra and git config mounts          |
 | `lib/project.sh`    | git repository root check, the `.go-yolo/` state directory         |
+| `lib/config.sh`     | `.go-yolo/config` parsing                                          |
+| `lib/plan.sh`       | the plan: helpers for packs, showing, diffing and confirming it    |
 | `lib/toolchains.sh` | Go and `GOYOLO_TOOLS` host toolchain mounts                        |
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
+| `packs/host.sh`     | plan items every project gets (base, CAs, time zone, proxies, extras) |
 
 Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)
 is part of the image. `docs/PLAN.md` describes where this is heading.
@@ -415,7 +479,7 @@ The tmux selection checks need `script(1)` (util-linux) and are skipped without 
 After building an image, check privilege dropping, executable shadows and the allowlist firewall:
 
 ```bash
-bash tests/docker.sh go-yolo:debian-trixie    # use your image's distro/codename tag
+bash tests/docker.sh go-yolo-base:debian-trixie    # use your image's distro/codename tag
 ```
 
 The container checks use temporary fixtures, require working allowlist networking, and report a

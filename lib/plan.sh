@@ -1,0 +1,441 @@
+# shellcheck shell=bash
+# The plan: everything go-yolo puts into the project image or passes to the container, and
+# how. You confirm it before anything is built; later runs show only what changed.
+#
+# A plan is a sorted list of lines with six tab-separated fields:
+#
+#   kind     group  method  name                       value          flags
+#   base     host   image   go-yolo-base:debian-trixie-3f2a91c0  -     -
+#   package  host   apt     libsqlite3-dev             3.46.1-2       -
+#   package  extra  apt     protobuf-compiler          3.21.12-11     not-on-host
+#   cert     host   copy    /usr/local/share/ca-certificates/corp.crt  1a2b3c4d  -
+#   env      host   env     TZ                         Europe/Prague  -
+#   env      extra  env     GITHUB_TOKEN               sha256:5e6f..  hidden
+#   env      host   skip    HTTPS_PROXY                -              secret
+#
+#   kind    base, package, cert: built into the image; env: passed when the container starts
+#   group   who asks for it: host (every project), extra (.go-yolo/config); later go, rust, ...
+#   method  how: image, apt, copy, env; or skip: shown so you see it, but left out
+#   value   a version, a content hash or an env value ("-" when there is none)
+#   flags   comma-separated notes, explained by plan_note ("-" when there are none)
+#
+# The packs (packs/*.sh) fill the plan through the plan_* helpers below.
+#
+# Sets: PLAN            the resolved plan lines, sorted
+#       PLAN_HASH       hash of the lines that go into the image (8 hex digits); part of the tag
+#       PLAN_CONFIRMED  when the plan in .go-yolo/plan was confirmed ("" if never)
+
+PLAN=()
+PLAN_HASH=""
+PLAN_CONFIRMED=""
+CONFIRMED_PLAN=()
+
+plan_file() { printf '%s/.go-yolo/plan' "$PROJECT_DIR"; }
+
+# ---------------------------------------------------------------------------
+# Building the plan
+# ---------------------------------------------------------------------------
+
+# plan_add KIND GROUP METHOD NAME [VALUE] [FLAGS] — add one line ("-" for a missing value).
+plan_add() {
+  local field
+  for field in "$@"; do
+    [[ $field != *[$'\t\n']* ]] || die "internal error: plan field with a tab or newline: $field"
+  done
+  PLAN+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"$'\t'"${5:--}"$'\t'"${6:--}")
+}
+
+# plan_has KIND NAME — true if the plan already has an item of KIND called NAME.
+plan_has() {
+  local line kind group method name rest
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    if [[ $kind == "$1" && $name == "$2" ]]; then return 0; fi
+  done
+  return 1
+}
+
+# apt_versions NAME... — for each apt package print five tab-separated fields:
+#   name, installed version, candidate version, installed_ok, candidate_ok
+# "(none)" stands for no version; *_ok is 1 if that version is in the distro archive, the
+# only place the image can install from (not third-party repositories, not backports).
+# Names apt doesn't know are not printed.
+apt_versions() {
+  # apt-cache policy prints, per package:
+  #   libsqlite3-dev:
+  #     Installed: 3.46.1-2
+  #     Candidate: 3.46.1-3
+  #     Version table:
+  #        3.46.1-3 500
+  #           500 http://deb.debian.org/debian trixie-security/main amd64 Packages
+  #    *** 3.46.1-2 500
+  #           500 http://deb.debian.org/debian trixie/main amd64 Packages
+  #           100 /var/lib/dpkg/status
+  # A version is in the distro archive if one of its sources is this release, its -updates
+  # or its -security suite, in a distro component (main, contrib, ..., universe).
+  apt-cache policy -- "$@" 2>/dev/null | awk -v codename="$HOST_CODENAME" '
+    function flush() {
+      if (name != "") print name "\t" installed "\t" candidate "\t" (installed in ok) + 0 "\t" (candidate in ok) + 0
+      name = ""
+      split("", ok)
+    }
+    /^[^ ].*:$/ { flush(); name = substr($0, 1, length($0) - 1); installed = candidate = "(none)"; next }
+    $1 == "Installed:" { installed = $2; next }
+    $1 == "Candidate:" { candidate = $2; next }
+    /^ \*\*\* / { version = $2; next }
+    /^     [^ ]/ { version = $1; next }
+    $2 ~ /^[a-z]+:\/\// {
+      suite = "^" codename "(-updates|-security)?/(main|contrib|non-free|non-free-firmware|restricted|universe|multiverse)$"
+      if ($3 ~ suite) ok[version] = 1
+    }
+    END { flush() }'
+}
+
+# plan_packages GROUP NAME... — apt packages, at the host's version where possible.
+#
+# The image never downgrades a package. So if the host is behind the archive, the image gets
+# the archive's newer version, with a warning in the plan: apt upgrade the host to match.
+plan_packages() {
+  local group=$1 name installed candidate installed_ok candidate_ok
+  shift
+  local wanted=() resolved=()
+  for name in "$@"; do
+    if plan_has package "$name"; then continue; fi
+    if config_has exclude package "$name"; then
+      plan_add package "$group" skip "$name" - excluded
+      continue
+    fi
+    wanted+=("$name")
+  done
+  ((${#wanted[@]})) || return 0
+
+  while IFS=$'\t' read -r name installed candidate installed_ok candidate_ok; do
+    resolved+=("$name")
+    if [[ $installed != "(none)" && $installed == "$candidate" ]] && ((installed_ok)); then
+      plan_add package "$group" apt "$name" "$installed"
+    elif [[ $installed != "(none)" ]] && ((candidate_ok)) \
+      && dpkg --compare-versions "$installed" lt "$candidate"; then
+      plan_add package "$group" apt "$name" "$candidate" "host-older=$installed"
+    elif [[ $installed == "(none)" ]] && ((candidate_ok)); then
+      plan_add package "$group" apt "$name" "$candidate" not-on-host
+    elif [[ $installed != "(none)" ]]; then
+      plan_add package "$group" skip "$name" "$installed" not-in-archive
+    else
+      plan_add package "$group" skip "$name" "$candidate" not-in-archive
+    fi
+  done < <(apt_versions "${wanted[@]}")
+
+  for name in "${wanted[@]}"; do
+    if [[ " ${resolved[*]} " != *" $name "* ]]; then plan_add package "$group" skip "$name" - not-found; fi
+  done
+}
+
+# plan_cert PATH — a CA certificate to add to the image's trust store, at the same path.
+plan_cert() {
+  local path=$1
+  if config_has exclude cert "$path"; then
+    plan_add cert host skip "$path" - excluded
+    return 0
+  fi
+  plan_add cert host copy "$path" "$(sha256sum <"$path" | cut -c1-8)"
+}
+
+# True if an env variable looks like it holds a secret: by its name, or a URL with a password.
+looks_secret() {
+  local name=${1^^} value=$2
+  case $name in
+    *TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*KEY*|*CREDENTIAL*|*AUTH*) return 0 ;;
+  esac
+  [[ $value =~ ://[^/@]*:[^/@]*@ ]]
+}
+
+# plan_env GROUP NAME [VALUE] — pass host variable NAME into the container. With VALUE (e.g.
+# a time zone go-yolo worked out itself), NAME is set to VALUE first. Looks-secret variables
+# are only passed when .go-yolo/config asks for them (extra env NAME); their values are never
+# shown or stored, only a hash, so a change is still noticed.
+plan_env() {
+  local group=$1 name=$2 value
+  if plan_has env "$name"; then return 0; fi
+  if config_has exclude env "$name"; then
+    plan_add env "$group" skip "$name" - excluded
+    return 0
+  fi
+  if (($# >= 3)); then
+    export "$name=$3"
+  elif [[ ! -v $name ]]; then
+    if [[ $group == extra ]]; then plan_add env "$group" skip "$name" - not-set; fi
+    return 0
+  fi
+  value=${!name}
+
+  if looks_secret "$name" "$value" && ! config_has extra env "$name"; then
+    plan_add env "$group" skip "$name" - secret
+  elif [[ -z $value ]]; then
+    plan_add env "$group" env "$name" - empty
+  elif looks_secret "$name" "$value" || [[ $value == *[$'\t\n']* ]]; then
+    plan_add env "$group" env "$name" "sha256:$(printf '%s' "$value" | sha256sum | cut -c1-12)" hidden
+  else
+    plan_add env "$group" env "$name" "$value"
+  fi
+}
+
+# Sort PLAN (base, packages, certs, env; then by name) and compute PLAN_HASH.
+plan_finish() {
+  local line kind rank build_lines=""
+  local ranked=()
+  for line in "${PLAN[@]}"; do
+    kind=${line%%$'\t'*}
+    case $kind in base) rank=1 ;; package) rank=2 ;; cert) rank=3 ;; *) rank=9 ;; esac
+    ranked+=("$rank"$'\t'"$line")
+  done
+  mapfile -t PLAN < <(printf '%s\n' "${ranked[@]}" | LC_ALL=C sort -t $'\t' -k1,1n -k5,5 | cut -f2-)
+
+  for line in "${PLAN[@]}"; do
+    if is_build_line "$line"; then build_lines+="$line"$'\n'; fi
+  done
+  PLAN_HASH="$(printf '%s' "$build_lines" | sha256sum | cut -c1-8)"
+}
+
+# True if LINE goes into the image (as opposed to runtime settings and skipped items).
+is_build_line() {
+  local kind group method rest
+  IFS=$'\t' read -r kind group method rest <<<"$1"
+  [[ $method != skip ]] && case $kind in base|package|cert) true ;; *) false ;; esac
+}
+
+# Load .go-yolo/config and let every pack add its items.
+resolve_plan() {
+  local pack
+  load_config
+  PLAN=()
+  for pack in "${PACKS[@]}"; do
+    if "${pack}_detect"; then "${pack}_resolve"; fi
+  done
+  plan_finish
+}
+
+# docker run -e arguments for the plan's env items (values come from the environment).
+plan_env_args() {
+  local line kind group method name rest
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    if [[ $kind == env && $method == env ]]; then printf '%s\n' -e "$name"; fi
+  done
+}
+
+# plan_items KIND [METHOD] — print the names of the plan's KIND items (with that METHOD).
+plan_items() {
+  local line kind group method name rest
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    if [[ $kind == "$1" && ( -z ${2:-} || $method == "$2" ) ]]; then printf '%s\n' "$name"; fi
+  done
+}
+
+# plan_value KIND NAME — print the value of the plan's KIND item called NAME.
+plan_value() {
+  local line kind group method name value rest
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name value rest <<<"$line"
+    if [[ $kind == "$1" && $name == "$2" ]]; then printf '%s' "$value"; return 0; fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Showing the plan
+# ---------------------------------------------------------------------------
+
+# plan_note FLAG NAME — explain one flag in words. Warnings start with "⚠".
+plan_note() {
+  case $1 in
+    excluded) printf 'excluded in .go-yolo/config' ;;
+    secret) printf 'not passed: looks like a secret (to pass it: extra env %s)' "$2" ;;
+    hidden) printf 'value not shown' ;;
+    empty) printf 'empty value' ;;
+    not-set) printf 'not passed: not set on the host' ;;
+    host-older=*) printf "⚠ the host has %s, an older version: the image gets the archive's version (apt upgrade the host to match)" "${1#host-older=}" ;;
+    not-on-host) printf '⚠ not installed on the host: a build that needs it works here but fails on the host' ;;
+    not-in-archive) printf "⚠ not installed: the host's version isn't in the %s archive (third-party repository, or apt upgrade the host)" "$HOST_ID" ;;
+    not-found) printf '⚠ no such apt package' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# plan_row MARK LINE [CHANGE] — print one plan line for people: "  + package  zlib1g-dev=1.3-1  note".
+# CHANGE says what the item was before (see plan_change).
+plan_row() {
+  local mark=$1 change=${3:-} kind group method name value flags text note notes="" color="" flag
+  local flag_list=()
+  IFS=$'\t' read -r kind group method name value flags <<<"$2"
+  case $kind in
+    package) text="$name${value:+=$value}"; text=${text%=-} ;;
+    env) if [[ $value == - || $value == sha256:* ]]; then text=$name; else text="$name=$value"; fi ;;
+    *) text=$name ;;
+  esac
+  if [[ $group != host ]]; then text+=" ($group)"; fi
+
+  if [[ $flags != - ]]; then
+    IFS=, read -ra flag_list <<<"$flags"
+    for flag in "${flag_list[@]}"; do
+      note="$(plan_note "$flag" "$name")"
+      notes+="${notes:+; }$note"
+    done
+  fi
+  if [[ -n $change ]]; then notes+="${notes:+; }$change"; fi
+  if [[ $mark == - ]]; then notes=""; fi  # a removed item's notes no longer matter
+
+  case $mark in
+    +) color=green ;;
+    -) color=red ;;
+    \~) color=yellow ;;
+  esac
+  printf '  %s %-8s %s' "$(ui_paint "$color" "$mark")" "$kind" "$(if [[ $method == skip ]]; then ui_paint dim "$text"; else printf '%s' "$text"; fi)" >&2
+  if [[ -n $notes ]]; then
+    if [[ $notes == *⚠* ]]; then printf '  %s' "$(ui_paint yellow "$notes")" >&2
+    else printf '  %s' "$(ui_paint dim "$notes")" >&2; fi
+  fi
+  printf '\n' >&2
+}
+
+# True if a plan line has a flag whose note is a warning (⚠).
+plan_has_warnings() {
+  local line kind group method name value flags flag
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name value flags <<<"$line"
+    [[ $flags != - ]] || continue
+    for flag in ${flags//,/ }; do
+      if [[ $(plan_note "$flag" "$name") == ⚠* ]]; then return 0; fi
+    done
+  done
+  return 1
+}
+
+# Show the whole plan.
+show_plan() {
+  local line
+  for line in "${PLAN[@]}"; do plan_row ' ' "$line"; done
+}
+
+# plan_change OLD_LINE NEW_LINE — what an item was before, in words ("" if only its notes changed).
+plan_change() {
+  local kind old_group old_method name old_value old_flags group method value flags
+  IFS=$'\t' read -r kind old_group old_method name old_value old_flags <<<"$1"
+  IFS=$'\t' read -r kind group method name value flags <<<"$2"
+  if [[ $old_method == skip && $method != skip ]]; then printf 'was left out'
+  elif [[ $old_method != skip && $method == skip ]]; then printf 'was included'
+  elif [[ $old_value != "$value" && $old_value == sha256:* ]]; then printf 'value changed'
+  elif [[ $old_value != "$value" ]]; then printf 'was %s' "$old_value"
+  elif [[ $old_group != "$group" ]]; then printf 'was from %s' "$old_group"
+  fi
+}
+
+# Show what changed between CONFIRMED_PLAN and PLAN: + added, - removed, ~ changed.
+show_plan_diff() {
+  local line key kind group method name value rest
+  local -A old=() new=()
+  for line in "${CONFIRMED_PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    old[$kind$'\t'$name]=$line
+  done
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    key=$kind$'\t'$name
+    new[$key]=$line
+    if [[ -z ${old[$key]:-} ]]; then
+      plan_row + "$line"
+    elif [[ ${old[$key]} != "$line" ]]; then
+      plan_row '~' "$line" "$(plan_change "${old[$key]}" "$line")"
+    fi
+  done
+  for line in "${CONFIRMED_PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    if [[ -z ${new[$kind$'\t'$name]:-} ]]; then plan_row - "$line"; fi
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Confirming the plan
+# ---------------------------------------------------------------------------
+
+# Read .go-yolo/plan into CONFIRMED_PLAN and PLAN_CONFIRMED.
+read_confirmed_plan() {
+  local file line
+  file="$(plan_file)"
+  CONFIRMED_PLAN=()
+  PLAN_CONFIRMED=""
+  [[ -f $file ]] || return 0
+  while IFS= read -r line; do
+    case $line in
+      '# confirmed: '*) PLAN_CONFIRMED=${line#'# confirmed: '} ;;
+      '#'*|'') ;;
+      *) CONFIRMED_PLAN+=("$line") ;;
+    esac
+  done <"$file"
+}
+
+save_plan() {
+  local file
+  file="$(plan_file)"
+  PLAN_CONFIRMED="$(date '+%Y-%m-%d %H:%M')"
+  {
+    printf '# go-yolo plan for %s. Written by go-yolo: edit .go-yolo/config instead.\n' "$PROJECT_DIR"
+    printf '# confirmed: %s\n' "$PLAN_CONFIRMED"
+    printf '%s\n' "${PLAN[@]}"
+  } >"$file"
+}
+
+# Open .go-yolo/config in $VISUAL or $EDITOR (vi), starting it with a short guide if new.
+edit_config() {
+  local file
+  file="$(config_file)"
+  if [[ ! -e $file ]]; then
+    cat >"$file" <<'EOF'
+# go-yolo settings for this project. One item per line:
+#
+#   extra    package  protobuf-compiler    also install this apt package
+#   extra    env      GITHUB_TOKEN         also pass this host environment variable
+#   exclude  package  libx11-dev           leave out an item the plan would include
+#   exclude  cert     /usr/local/share/ca-certificates/old.crt
+#   exclude  env      HTTPS_PROXY
+EOF
+  fi
+  "${VISUAL:-${EDITOR:-vi}}" "$file" </dev/tty >/dev/tty
+}
+
+# Show the plan if it is new or changed, and ask before going on. Without a terminal an
+# unconfirmed plan is never used (except with --yes); a dry run shows it and goes on.
+confirm_plan() {
+  local answer
+  read_confirmed_plan
+  while true; do
+    if [[ "$(printf '%s\n' "${CONFIRMED_PLAN[@]}")" == "$(printf '%s\n' "${PLAN[@]}")" ]]; then
+      return 0
+    fi
+
+    if ((${#CONFIRMED_PLAN[@]})); then
+      note "the plan for this project changed since it was confirmed ($PLAN_CONFIRMED):"
+      show_plan_diff
+    else
+      note "plan for $PROJECT_DIR (new; edit .go-yolo/config to change it):"
+      show_plan
+    fi
+
+    if ((YES)); then save_plan; return 0; fi
+    if ((DRY_RUN)); then note "dry run: the plan is not confirmed"; return 0; fi
+    [[ -t 0 && -t 2 ]] \
+      || die "the plan is new or changed; run go-yolo in a terminal to confirm it, or pass --yes"
+
+    while true; do
+      if plan_has_warnings; then warn "the plan has warnings (⚠); check them before you go on"; fi
+      read -r -p "go-yolo: use this plan? [y]es [n]o [e]dit config [d]ockerfile: " answer
+      case $answer in
+        y|yes) save_plan; return 0 ;;
+        n|no|'') note "aborted; nothing was built"; exit 1 ;;
+        e|edit) edit_config; resolve_plan; break ;;
+        d|dockerfile) project_dockerfile >&2 ;;
+        *) note "y: build with this plan · n: stop · e: edit .go-yolo/config · d: show the Dockerfile" ;;
+      esac
+    done
+  done
+}

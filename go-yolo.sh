@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # go-yolo: run AI coding agents in a Docker container.
 #
-# This file only lists the steps of a run; each step lives in lib/<module>.sh.
+# This file only lists the steps of a run; each step lives in lib/<module>.sh, and the items
+# of the project image come from the packs in packs/<pack>.sh.
 # shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(dirname "$SELF")"
 AGENTS=(claude codex vibe opencode shell)
+PACKS=(host)
 
 # shellcheck source=lib/ui.sh
 source "$REPO_DIR/lib/ui.sh"
@@ -23,17 +25,23 @@ source "$REPO_DIR/lib/image.sh"
 source "$REPO_DIR/lib/mounts.sh"
 # shellcheck source=lib/project.sh
 source "$REPO_DIR/lib/project.sh"
+# shellcheck source=lib/config.sh
+source "$REPO_DIR/lib/config.sh"
+# shellcheck source=lib/plan.sh
+source "$REPO_DIR/lib/plan.sh"
 # shellcheck source=lib/toolchains.sh
 source "$REPO_DIR/lib/toolchains.sh"
 # shellcheck source=lib/agent.sh
 source "$REPO_DIR/lib/agent.sh"
 # shellcheck source=lib/run.sh
 source "$REPO_DIR/lib/run.sh"
+# shellcheck source=packs/host.sh
+source "$REPO_DIR/packs/host.sh"
 
 ui_set_color auto
 parse_args "$@"            # exits for --help and the alias commands
 detect_host
-choose_image
+choose_base_image
 
 mount_workdir              # the project directory; refuses $HOME and its parents
 check_project              # must be the git repository root
@@ -47,6 +55,10 @@ add_tool_mounts
 load_agent_profile
 add_agent_mounts
 
+resolve_plan               # what goes into the project image and the container
+confirm_plan               # shows a new or changed plan and asks
+choose_project_image
+
 set_network_args
 decide_tmux
 build_docker_command
@@ -57,6 +69,7 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-ensure_image
+ensure_base_image
+ensure_project_image
 print_banner
 exec "${CMD[@]}"

@@ -7,8 +7,10 @@ trap 'rm -rf -- "$TEST_DIR"' EXIT
 TEST_HOME="$TEST_DIR/home"
 mkdir -p "$TEST_DIR/bin" "$TEST_HOME"/{bin,project/nested/deeper,go/pkg/mod,cache,toolchain,links,.gradle,.m2} \
   "$TEST_DIR/jdk/bin" "$TEST_DIR/java-config" "$TEST_HOME/with spaces"
-cp "$REPO_DIR/tests/fixtures/"{go,docker} "$TEST_DIR/bin/"
-chmod +x "$TEST_DIR/bin/"{go,docker}
+cp "$REPO_DIR/tests/fixtures/"{go,docker,apt-cache} "$TEST_DIR/bin/"
+chmod +x "$TEST_DIR/bin/"{go,docker,apt-cache}
+mkdir -p "$TEST_DIR/ca/corp"
+printf 'not really a certificate\n' >"$TEST_DIR/ca/corp/root.crt"
 cp "$REPO_DIR/tests/fixtures/go" "$TEST_DIR/jdk/bin/java"
 chmod +x "$TEST_DIR/jdk/bin/java"
 cp "$TEST_DIR/jdk/bin/java" "$TEST_HOME/bin/java"
@@ -24,7 +26,7 @@ passed=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { passed=$((passed + 1)); printf 'ok %d - %s\n' "$passed" "$*"; }
 launch() (
-  cd "$TEST_HOME/project"
+  cd "${LAUNCH_DIR:-$TEST_HOME/project}"
   env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" \
     GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1 \
     GOYOLO_TOOLS="${TEST_TOOLS-}" GOYOLO_GOPATH_MODE="${TEST_GOPATH_MODE-rw}" \
@@ -33,8 +35,10 @@ launch() (
     GOPATH="${TEST_GOPATH-$TEST_HOME/go}" GOCACHE="${TEST_GOCACHE-$TEST_HOME/cache}" \
     GOMODCACHE="${TEST_GOMODCACHE-$TEST_HOME/go/pkg/mod}" GOENV=off \
     DOCKER_TEST_LOG="$TEST_DIR/docker.log" DOCKER_TEST_IMAGE_STATUS="${TEST_IMAGE_STATUS-0}" \
-    "$REPO_DIR/go-yolo.sh" "$@"
+    TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$REPO_DIR/tests/fixtures/apt-policy" \
+    "${TEST_ENV[@]}" "$REPO_DIR/go-yolo.sh" "$@"
 )
+TEST_ENV=()   # extra VAR=value settings for launch
 reject() {
   local output
   if output="$(launch --dry-run "$@" 2>&1)"; then fail "accepted unsafe mount: $*"; fi
@@ -42,7 +46,7 @@ reject() {
 }
 dry_run() {
   local output line arg
-  output="$(launch --dry-run "$@")" || fail "dry run failed: $*"
+  output="$(launch --dry-run "$@" 2>"$TEST_DIR/stderr")" || fail "dry run failed: $*: $(cat "$TEST_DIR/stderr")"
   ARGS=()
   # The launcher emits one safely shell-quoted argument per line.
   while IFS= read -r line; do
@@ -155,7 +159,7 @@ rm -f "$TEST_HOME/.claude"
 mkdir -p "$TEST_HOME/.claude"
 dry_run claude 2>/dev/null
 [[ ! -e $TEST_HOME/.claude.json ]] || fail 'dry run created a config file'
-launch claude 2>/dev/null
+launch --yes claude 2>/dev/null
 [[ $(cat "$TEST_HOME/.claude.json") == '{}' ]] || fail 'missing .claude.json was not created'
 [[ $(stat -c %a "$TEST_HOME/.claude.json") == 600 ]] || fail '.claude.json is not mode 600'
 dry_run claude
@@ -214,14 +218,9 @@ for arg in "${ARGS[@]}"; do [[ $arg != *$'\e['* ]] || fail 'color codes leaked i
 pass '--color always|never overrides detection and never touches stdout'
 
 # launch_in DIR ARGS... — like launch, but from DIR; prints stderr, never fails.
-launch_in() (
-  cd "$1" && shift
-  env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" GOYOLO_TOOLS= GOENV=off \
-    GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1 \
-    DOCKER_TEST_LOG="$TEST_DIR/docker.log" GOROOT="$TEST_HOME/toolchain" GOPATH="$TEST_HOME/go" \
-    GOCACHE="$TEST_HOME/cache" GOMODCACHE="$TEST_HOME/go/pkg/mod" \
-    "$REPO_DIR/go-yolo.sh" "$@" 2>&1 >/dev/null || true
-)
+launch_in() {
+  LAUNCH_DIR=$1 launch "${@:2}" 2>&1 >/dev/null || true
+}
 mkdir -p "$TEST_DIR/not-a-repo"
 [[ $(launch_in "$TEST_DIR/not-a-repo" --dry-run shell) == *'not inside a git repository'* ]] \
   || fail 'ran outside a git repository'
@@ -235,7 +234,7 @@ dry_run shell 2>/dev/null
 [[ ! -e $STATE ]] || fail 'dry run created .go-yolo'
 for arg in "${ARGS[@]}"; do [[ $arg != "type=tmpfs,destination=$STATE,tmpfs-mode=0555" ]] || break; done
 [[ $arg == "type=tmpfs,destination=$STATE,tmpfs-mode=0555" ]] || fail '.go-yolo is not covered by a tmpfs'
-launch claude 2>/dev/null
+launch --yes claude 2>/dev/null
 [[ -d $STATE && $(stat -c %a "$STATE") == 700 ]] || fail '.go-yolo was not created with mode 700'
 [[ $(cat "$STATE/.gitignore") == '*' ]] || fail '.go-yolo/.gitignore does not ignore everything'
 [[ -z $(git -C "$TEST_HOME/project" status --porcelain --ignored=no) ]] || fail 'git sees .go-yolo'
@@ -252,23 +251,134 @@ git -C "$TEST_HOME/project" rm -q --cached .go-yolo/.gitignore
 pass 'a symlinked or git-tracked .go-yolo is refused'
 
 : >"$TEST_HOME/project/Dockerfile"
-[[ $(launch_in "$TEST_HOME/project" shell) == *'add .go-yolo/ to its .dockerignore'* ]] || fail 'no .dockerignore warning'
-[[ $(launch_in "$TEST_HOME/project" shell) != *'.dockerignore'* ]] || fail '.dockerignore warning repeated'
+[[ $(launch_in "$TEST_HOME/project" --yes shell) == *'add .go-yolo/ to its .dockerignore'* ]] || fail 'no .dockerignore warning'
+[[ $(launch_in "$TEST_HOME/project" --yes shell) != *'.dockerignore'* ]] || fail '.dockerignore warning repeated'
 rm -f "$STATE/warned-dockerignore"
 printf '.go-yolo/\n' >"$TEST_HOME/project/.dockerignore"
-[[ $(launch_in "$TEST_HOME/project" shell) != *'.dockerignore'* ]] || fail 'warned despite .dockerignore'
+[[ $(launch_in "$TEST_HOME/project" --yes shell) != *'.dockerignore'* ]] || fail 'warned despite .dockerignore'
 rm -f "$TEST_HOME/project/Dockerfile" "$TEST_HOME/project/.dockerignore"
 pass 'a Dockerfile without .go-yolo/ in .dockerignore gets a one-time warning'
 
-launch --rebuild shell
+# --- The plan ---------------------------------------------------------------
+
+rm -rf -- "$STATE"
+mkdir -p "$STATE"
+CONFIG="$STATE/config"
+cat >"$CONFIG" <<'CONF'
+# packages: current, host behind the archive, not on the host, third-party, backports, unknown
+extra package libfoo-dev
+extra package libold-dev
+extra package protobuf-compiler
+extra package vendor-tool
+extra package libbpo-dev
+extra package no-such-package
+extra package libx11-dev
+exclude package libx11-dev
+extra env API_TOKEN
+extra env NOT_SET_ANYWHERE
+CONF
+TEST_ENV=(API_TOKEN=s3cr3t-value HTTPS_PROXY=http://user:pw@proxy.example:3128 NO_PROXY=localhost)
+
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan() {
+  [[ $plan_text == *"$1"* ]] || fail "plan lacks '$1':"$'\n'"$plan_text"
+}
+expect_plan 'package  libfoo-dev=1.0-1 (extra)'
+expect_plan "package  libold-dev=1.0-1+deb13u1 (extra)  ⚠ the host has 1.0-1, an older version"
+expect_plan 'protobuf-compiler=3.21.12-11 (extra)  ⚠ not installed on the host'
+expect_plan "vendor-tool=2.0-1 (extra)  ⚠ not installed: the host's version isn't in the debian archive"
+expect_plan "libbpo-dev=5.0-1~bpo13+1 (extra)  ⚠ not installed: the host's version isn't in the debian archive"
+expect_plan 'no-such-package (extra)  ⚠ no such apt package'
+expect_plan 'libx11-dev (extra)  excluded in .go-yolo/config'
+expect_plan "cert     $TEST_DIR/ca/corp/root.crt"
+expect_plan 'env      TZ=Europe/Prague'
+expect_plan 'env      NO_PROXY=localhost'
+expect_plan 'env      HTTPS_PROXY  not passed: looks like a secret (to pass it: extra env HTTPS_PROXY)'
+expect_plan 'env      API_TOKEN (extra)  value not shown'
+expect_plan 'NOT_SET_ANYWHERE (extra)  not passed: not set on the host'
+[[ $plan_text != *s3cr3t* && $plan_text != *user:pw* ]] || fail 'the plan shows a secret value'
+[[ ! -e $STATE/plan ]] || fail 'a dry run confirmed the plan'
+pass 'the plan resolves packages, certificates and env, and never shows secrets'
+
+output="$(launch shell 2>&1)" && fail 'an unconfirmed plan was used without a terminal'
+[[ $output == *'run go-yolo in a terminal to confirm it, or pass --yes'* ]] || fail "unexpected error: $output"
+[[ ! -e $STATE/plan ]] || fail 'the plan was saved without confirmation'
+cp /dev/null "$TEST_DIR/docker.log"
+TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
+[[ -f $STATE/plan ]] || fail '--yes did not save the plan'
+! grep -q s3cr3t "$STATE/plan" || fail 'the saved plan holds a secret value'
+pass 'an unconfirmed plan needs a terminal or --yes'
+
+dockerfile="$(cat "$STATE/build/Dockerfile")"
+[[ $dockerfile == *'FROM go-yolo-base:debian-trixie-'* ]] || fail 'project image is not built FROM the base'
+for pinned in libfoo-dev=1.0-1 libold-dev=1.0-1+deb13u1 protobuf-compiler=3.21.12-11; do
+  [[ $dockerfile == *"      $pinned \\"* ]] || fail "Dockerfile does not install $pinned"
+done
+for left_out in vendor-tool libbpo-dev no-such-package libx11-dev; do
+  [[ $dockerfile != *"$left_out"* ]] || fail "Dockerfile installs $left_out"
+done
+[[ $dockerfile != *allow-downgrades* ]] || fail 'Dockerfile allows downgrades'
+[[ $dockerfile == *'COPY files/ /'* && -f $STATE/build/files$TEST_DIR/ca/corp/root.crt ]] \
+  || fail 'the CA certificate is not staged at its host path'
+grep -qxF -- "$STATE/build/Dockerfile" "$TEST_DIR/docker.log" || fail 'the project image was not built'
+pass 'the project image installs exactly the planned packages, never downgrading, plus the CAs'
+
+[[ -z $(launch --yes shell 2>&1 >/dev/null) ]] || fail 'an unchanged plan was shown again'
+dry_run shell
+image_before=${ARGS[-1]}
+for arg in "${ARGS[@]}"; do [[ $arg != *s3cr3t* ]] || fail 'a secret value is on the docker command line'; done
+printf '%s\n' "${ARGS[@]}" | grep -qxF API_TOKEN || fail 'API_TOKEN is not passed by name'
+TEST_ENV=(API_TOKEN=rotated HTTPS_PROXY=http://user:pw@proxy.example:3128 NO_PROXY=localhost)
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan '~ env      API_TOKEN (extra)  value not shown; value changed'
+dry_run shell
+[[ ${ARGS[-1]} == "$image_before" ]] || fail 'a runtime-only change changed the image'
+printf 'extra package libfoo-dev\n' >"$CONFIG"
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan '- package  libold-dev'
+dry_run shell
+[[ ${ARGS[-1]} != "$image_before" ]] || fail 'a package change kept the image'
+pass 'changes are shown as a diff; only build-time changes change the image'
+
+printf 'extra package ok\ninstall package nope\n' >"$CONFIG"
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"$CONFIG:2: unknown 'install' (use extra or exclude)"* ]] \
+  || fail 'a bad config line was accepted'
+printf 'extra thing x\n' >"$CONFIG"
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"unknown kind 'thing'"* ]] || fail 'a bad kind was accepted'
+rm -f "$CONFIG" "$STATE/plan"
+TEST_ENV=()
+pass '.go-yolo/config errors name the file and line'
+
+# The prompt needs a terminal; script(1) provides one and feeds it our answers.
+if command -v script >/dev/null 2>&1; then
+  answer_prompt() {
+    local cmd
+    printf -v cmd '%q ' env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" TERM=dumb \
+      GOYOLO_TOOLS= GOENV=off GOYOLO_QUIET=1 GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" \
+      GOROOT="$TEST_HOME/toolchain" GOPATH="$TEST_HOME/go" GOCACHE="$TEST_HOME/cache" \
+      GOMODCACHE="$TEST_HOME/go/pkg/mod" DOCKER_TEST_LOG="$TEST_DIR/docker.log" TZ=UTC \
+      GOYOLO_CA_DIR="$TEST_DIR/ca" "$REPO_DIR/go-yolo.sh" shell -c true
+    (cd "$TEST_HOME/project" && printf '%s\n' "$@" | TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null) \
+      | tr -d '\r' || true
+  }
+  output="$(answer_prompt '?' n)"
+  [[ $output == *'y: build with this plan'* && $output == *'aborted; nothing was built'* ]] \
+    || fail "the prompt did not explain itself and abort: $output"
+  [[ ! -e $STATE/plan ]] || fail 'the plan was saved after answering n'
+  answer_prompt y >/dev/null
+  grep -q 'TZ	UTC' "$STATE/plan" || fail 'the plan was not saved after answering y'
+  pass 'the plan prompt explains its choices, aborts on n and saves on y'
+fi
+
+launch --yes --rebuild shell
 grep -qxF -- --pull "$TEST_DIR/docker.log" || fail 'rebuild did not pull the base'
 grep -qxF -- --no-cache "$TEST_DIR/docker.log" || fail 'rebuild did not disable caching'
 cp /dev/null "$TEST_DIR/docker.log"
-TEST_IMAGE_STATUS=1 launch shell
+TEST_IMAGE_STATUS=1 launch --yes shell
 if grep -qxE -- '--no-cache|--pull' "$TEST_DIR/docker.log"; then fail 'ordinary build disabled caching'; fi
 grep -qxF build "$TEST_DIR/docker.log" || fail 'ordinary build was not exercised'
 cp /dev/null "$TEST_DIR/docker.log"
-launch shell
+launch --yes shell
 if grep -qxF build "$TEST_DIR/docker.log"; then fail 'existing image was rebuilt'; fi
 pass 'explicit rebuilds refresh packages; ordinary builds and image reuse keep caching'
 

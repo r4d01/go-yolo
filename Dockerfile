@@ -20,7 +20,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client less procps jq ripgrep \
       iptables ipset dnsutils iproute2 util-linux tini tmux ncurses-term \
-      build-essential python3 xz-utils gpgv \
+      build-essential python3 xz-utils gpgv tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 # Node.js from nodejs.org: distro packages are too old on some bases (Claude Code needs >= 22).

@@ -32,6 +32,8 @@ host toolchains the project needs, plus **project-local caches** that persist be
 | D12 | **Bash stays**, split into small modules. KISS and readability come first; some performance can be traded for it. A Go rewrite may come later. |
 | D13 | **Color output** on terminals; **fzf** is an optional helper, never required. |
 | D14 | Language order: **Go → Rust → Node → Java (Maven, Gradle) → Android**. |
+| D15 | **The image never downgrades a package.** If the host is behind the archive, the image gets the archive's newer version, and the plan shows a ⚠; you decide whether to go on (or `apt upgrade` the host). |
+| D16 | **Only packages a project needs**, never "all of the host's `*-dev` packages". Language packs propose the packages they find a reason for (e.g. a cgo `pkg-config` name → the host package owning that `.pc` file); everything else is an `extra package`. |
 
 ## 3. Design
 
@@ -60,7 +62,7 @@ lib/
   plan.sh             plan helpers (plan_toolchain, plan_env, ...), render, diff, confirm
   image.sh            base image build, project Dockerfile generation, project image build
   run.sh              docker run command, tmux decision, banner
-langs/
+packs/
   go.sh  rust.sh  node.sh  java.sh  android.sh
 agents/*.conf         unchanged
 ```
@@ -76,7 +78,8 @@ Conventions:
 
 ### 3.3 Language packs
 
-Each `langs/<name>.sh` defines two functions, prefixed with the language name:
+Each `packs/<name>.sh` defines two functions, prefixed with the pack name. `packs/host.sh` (base
+image, CAs, time zone, proxies, extras) is the pack every project gets:
 
 ```bash
 go_detect()  { [[ -f go.mod ]]; }     # does the project need this language?
@@ -224,15 +227,17 @@ runtime (not baked into the image)
    along. Extra host apt sources (`/etc/apt/sources.list.d/*`) and their keyrings are mirrored. If
    the exact version is no longer available, fall back to copying the directory and installing
    the packages it depends on.
-4. **Host build packages**: manually installed (`apt-mark showmanual`) packages in the `libdevel`
-   and `devel` sections (e.g. `libsqlite3-dev`, `pkg-config`, `cmake`, `mold`) are proposed for
-   the image at the host's versions.
-   **Extra packages** (`extra package <name>` in `.go-yolo/config`) are installed from apt too:
-   at the host's version if the host has the package, otherwise at the version `apt-cache policy`
-   reports on the host (same codename, so the same archive). The version is recorded in the plan,
-   so a change shows up in the diff. A package that isn't installed on the host is marked
-   `⚠ not on host`: a build that needs it works in the container but not on the host. Only apt
-   for now; a free-form Dockerfile snippet can come later if there's a real need.
+4. **Packages** (D16): the packs propose what a project needs; `extra package <name>` adds more.
+   Each gets the **host's version** when it is in the distro archive (this release, its
+   `-updates` and `-security` suites; checked with `apt-cache policy`). Otherwise:
+   - host behind the archive → the archive's newer version, `⚠` (D15: never a downgrade);
+   - not installed on the host → the archive's version, `⚠ not installed on the host`;
+   - the host's version only comes from a third-party repository or backports → left out, `⚠`;
+   - unknown to apt → left out, `⚠`.
+   The version is recorded in the plan, so a change shows up in the diff. Only apt for now; a
+   free-form Dockerfile snippet can come later if there's a real need. (An earlier idea, all of
+   the host's `*-dev` packages, pulled in X11, OpenGL and LLVM headers no build needed, and
+   hit downgrades on an out-of-date host.)
 5. **CA certificates**: host extra CAs (`/usr/local/share/ca-certificates/*`) are copied and
    `update-ca-certificates` is run.
 6. **Config in parent directories** (`go.work`, `.cargo/config.toml`, `rust-toolchain.toml`) is
@@ -241,9 +246,11 @@ runtime (not baked into the image)
    `org.gradle.java.installations.paths`, Cargo `target-dir`, npm `prefix`, `go.work` `use`) are
    reported in the plan with a warning when they point outside what the plan covers.
 8. **Env vars**: each pack lists candidate names. Candidates set on the host are proposed with
-   their values. Names matching `*TOKEN*|*SECRET*|*PASSWORD*|*KEY*|*CREDENTIAL*` are never
-   proposed; they can only be added with `extra env NAME`. Values are passed with `docker run -e`,
-   never baked into the image. `TZ` and `LANG` are always proposed.
+   their values. Names matching `*TOKEN*|*SECRET*|*PASSWORD*|*KEY*|*CREDENTIAL*|*AUTH*`, and
+   URLs with a password, are never proposed; they can only be added with `extra env NAME`, and
+   their values are never shown or stored (only a hash). Variables are passed by name with
+   `docker run -e NAME`, never baked into the image and never on the command line. `TZ` is
+   always proposed (`tzdata` is in the base image); `LANG` is passed as before.
 9. **Config files** are mounted read-only at their host path. Files that look like they hold
    credentials get a `⚠` in the plan. Known secret files are never proposed (see each language).
 
@@ -276,7 +283,13 @@ old way. Each phase updates the README and the tests.
 Done when: `tests/run.sh` and `tests/docker.sh` pass unchanged (apart from color-aware output
 checks), and `--dry-run` output is identical to before for the test fixtures.
 
-### Phase 0 — Project images, plan and confirmation
+### Phase 0 — Project images, plan and confirmation — in progress
+
+Done so far: `.go-yolo/` and the project checks; the plan with diff, confirmation (prompt,
+`--yes`, refusal without a terminal) and `$EDITOR` editing; `.go-yolo/config`; base image
+`go-yolo-base:…` and the generated project image; packages (rule 4), CAs, time zone, proxies,
+extra env. Still to do: fzf editing, `--parity`, `--prune`, the agent picker. Named contexts and
+ownership (`--chown`) come with the first pack that copies a toolchain (phase 1).
 
 - `lib/project.sh`: git-root check (D9), `.go-yolo/` creation and checks (3.5), tmpfs cover,
   `.dockerignore` warning.
@@ -284,8 +297,8 @@ checks), and `--dry-run` output is identical to before for the test fixtures.
   `.go-yolo/config` parsing, fzf editing with `$EDITOR` fallback.
 - `lib/image.sh`: base image as `go-yolo-base:…`, generated project Dockerfile, named
   contexts, ownership, labels.
-- Cross-cutting rules 3–5, 8 and 9 (apt mirroring, build packages, extra packages, CAs, env vars,
-  config files).
+- Cross-cutting rules 4, 5 and 8 (packages, CAs, env vars). Rules 3 (apt-installed toolchains,
+  third-party sources) and 9 (config files) come with the first pack that needs them.
 - `--parity`: run the same probes on the host and in the container and show the differences
   (env vars, plus whatever each language pack adds).
 - `--prune`: list go-yolo images with project, plan date, size and whether the project still
@@ -293,7 +306,7 @@ checks), and `--dry-run` output is identical to before for the test fixtures.
 - Agent picker when no agent is given.
 
 Done when: a project without any language markers gets a confirmed plan, a project image
-(base + CAs + build packages + env), the hidden `.go-yolo/`, and `--parity` shows no unexpected
+(base + CAs + extra packages + env), the hidden `.go-yolo/`, and `--parity` shows no unexpected
 differences. Changing a host package version shows a diff and rebuilds after confirmation.
 
 ### Phase 1 — Go
