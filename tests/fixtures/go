@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $* == 'env GOROOT GOPATH GOCACHE GOMODCACHE GOENV' ]]
+printf '%s\n' "$GOROOT" "$GOPATH" "$GOCACHE" "$GOMODCACHE" "$GOENV"

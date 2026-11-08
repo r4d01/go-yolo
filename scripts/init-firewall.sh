@@ -96,10 +96,21 @@ else
   log "ip6tables unavailable, but the container has no global IPv6 address or route"
 fi
 
-# Self-test.
-if curl -sS -o /dev/null --max-time 5 https://example.com 2>/dev/null; then
-  die "self-test failed: https://example.com is reachable"
-fi
+# Self-test. The blocked probe must use an address outside the allowlist: example.* sit
+# behind CDNs, which an allowed host can share.
+probed=0
+for probe in example.com example.net example.org; do
+  mapfile -t ips < <(dig +short +time=3 +tries=2 A "$probe" 2>/dev/null | grep -E "$IPV4_RE" || true)
+  for ip in "${ips[@]}"; do
+    if ipset test "$IPSET" "$ip" 2>/dev/null; then continue; fi
+    if curl -sS -o /dev/null --max-time 5 --resolve "$probe:443:$ip" "https://$probe" 2>/dev/null; then
+      die "self-test failed: https://$probe ($ip) is reachable"
+    fi
+    probed=1
+    break 2
+  done
+done
+((probed)) || log "warning: no probe address outside the allowlist; skipped the blocked-host self-test"
 curl -sS -o /dev/null --max-time 5 https://api.github.com \
   || die "self-test failed: https://api.github.com is not reachable"
 

@@ -1,7 +1,8 @@
 # go-yolo
 
 `go-yolo` runs AI coding agents (**Claude Code**, **OpenAI Codex CLI**, **Mistral Vibe**, **opencode**)
-inside a Docker container that mirrors your host user, your project directory and your Go toolchain.
+inside a Docker container that mirrors your host user, your project directory, your Go toolchain
+and other host toolchains (Java, Maven, Gradle, ...).
 
 By default the agent runs **with its normal permission prompts** (Claude Code starts in auto mode,
 where a classifier approves safe actions and prompts for risky ones). With `--yolo` those prompts are
@@ -15,10 +16,22 @@ agents:  claude | codex | vibe | opencode | shell
 opts:    --net open|allowlist|none   (default: open)
          --rebuild                   force image rebuild
          --yolo                      turn off the agent's permission prompts (default: off)
-         --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY;
+         --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY,
+                                     except for non-interactive runs such as claude -p;
                                      prefix c: extra shell)
+         --tmux                      always use tmux, even for non-interactive runs
+         --mount PATH[:ro|:rw]       also mount PATH at the same path (default: ro; repeatable)
          --dry-run                   print the docker command and exit
          -h | --help
+
+env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put on PATH
+                                     (default shown; add e.g. sbt kotlin ant, or set empty)
+         GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
+         GOYOLO_GOPATH_MODE=rw|ro|modcache  how GOPATH is mounted (default: rw)
+         GOYOLO_EXTRA_DOMAINS="a.example ..."  more domains for --net allowlist
+         GOYOLO_QUIET=1                     don't print the mount summary line
+         GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
+                                     version pins for the image build (use with --rebuild)
 
 alias commands (no agent needed):
 ./go-yolo.sh --print-aliases         print alias definitions to stdout
@@ -38,10 +51,14 @@ environment, for debugging (`go-yolo.sh shell -c 'go version'` also works).
 - SSH keys, the SSH agent socket, the Docker socket and cloud credentials. None of them are
   mounted or forwarded.
 - Arbitrary network egress, **but only in `--net allowlist` mode, which is not the default.** In the
-  default `open` mode the agent can send anything it can read to any host on the internet.
+  default `open` mode the agent can send anything it can read to any host on the internet, and it
+  can reach the Docker host, your LAN and, on a cloud VM, the instance metadata service
+  (`169.254.169.254`) with its credentials.
 
 Inside the container, no process holds any Linux capability once the agent starts: `CapEff`,
 `CapPrm` and `CapBnd` are all zero, `no_new_privs` is set, and there is no `sudo`.
+Privileged startup uses only the image's executable paths; host toolchains are added to `PATH`
+after privileges are dropped.
 
 **What it does not protect:**
 
@@ -53,9 +70,17 @@ Inside the container, no process holds any Linux capability once the agent start
   directory are readable too.
 - **`~/go/bin` when GOPATH is mounted read-write** (the default). The agent can replace binaries
   that you later run on the host. Use `GOYOLO_GOPATH_MODE=modcache` or `ro` to avoid this.
-- `~/.gitconfig` is mounted read-only, so the agent can read it (it usually holds no secrets).
+- **`~/.m2` and `~/.gradle`** (mounted read-write when `mvn`/`gradle` are in `GOYOLO_TOOLS`, the
+  default). `settings.xml` and `gradle.properties` often hold repository credentials, and the
+  agent can add a Gradle init script that later runs on the host. Set `GOYOLO_TOOLS=` to opt out.
+- `~/.gitconfig` and `~/.config/git/{config,ignore,attributes}` are mounted read-only, so the
+  agent can read them (they usually hold no secrets; `~/.config/git/credentials` is not mounted).
+- Anything you add with `--mount` or `GOYOLO_MOUNTS`. A read-only mount can still be read and,
+  in `open` mode, sent anywhere.
 - Data sent to allowed domains. In `allowlist` mode, a domain such as `api.github.com`,
   `raw.githubusercontent.com` or `storage.googleapis.com` can still carry data out.
+- DNS in `allowlist` mode. Queries to the container's nameservers are allowed, so data can leave
+  encoded in DNS lookups (DNS tunnelling). Use `--net none` if that matters.
 - Kernel or container-escape vulnerabilities. Docker is not a VM.
 
 ## Requirements
@@ -64,9 +89,11 @@ Inside the container, no process holds any Linux capability once the agent start
   Pop!\_OS are not detected on purpose: their codenames are not Docker image tags.
 - Docker, and a user that can run `docker` (e.g. in the `docker` group).
 - Optional: Go on the host. Its toolchain and caches are mounted into the container.
+- Optional: a JDK, Maven, Gradle (or other tools, see [Host toolchains](#host-toolchains)) on the
+  host. They are mounted into the container too.
 
 The image's base matches the host (`debian:<codename>`, `ubuntu:<codename>` or
-`kalilinux/kali-rolling`), so host-mounted binaries (the Go toolchain, `~/go/bin/*`) find the same
+`kalilinux/kali-rolling`), so host-mounted binaries (the Go toolchain, `~/go/bin/*`, a JDK) find the same
 glibc. **Kali is a rolling release:** the image's glibc matches the host only while both are up to
 date. Run `go-yolo.sh --rebuild shell` after upgrading the host.
 
@@ -114,12 +141,12 @@ Run it from a project directory. Running from `$HOME`, `/` or any parent of `$HO
 cd ~/src/myproject
 
 go-yolo.sh claude                          # Claude Code, auto mode
-go-yolo.sh claude -p "say hi"              # non-interactive
+go-yolo.sh claude -p "say hi"              # non-interactive (runs without tmux)
 go-yolo.sh --yolo claude                   # no permission prompts
 go-yolo.sh --yolo --net allowlist claude   # no prompts, restricted egress
 
 go-yolo.sh codex                           # Codex CLI, approval prompts on
-go-yolo.sh --yolo codex exec "run the tests and fix failures"
+go-yolo.sh --yolo codex exec "run the tests and fix failures"   # without tmux too
 
 go-yolo.sh vibe
 go-yolo.sh --yolo vibe
@@ -137,7 +164,7 @@ the network mode, the YOLO state and what is mounted, so you know which side of 
 you're on. stdout stays clean for `-p`/`exec` output. Set `GOYOLO_QUIET=1` to turn it off.
 
 ```
-go-yolo: claude in container go-yolo:debian-trixie-bddc78a0 · net=open · yolo=off · rw: ~/src/myproject, ~/go, ~/.cache/go-build, ~/.claude, ~/.claude.json · ro: ~/.gitconfig, /opt/go/1.27.0
+go-yolo: claude in container go-yolo:debian-trixie-bddc78a0 · net=open · yolo=off · tmux · rw: ~/src/myproject, ~/go, ~/.cache/go-build, ~/.claude, ~/.claude.json · ro: ~/.gitconfig, /opt/go/1.27.0
 ```
 
 Log in inside the container the first time (e.g. `/login` in Claude, `codex login`). The agent's
@@ -147,7 +174,11 @@ container, so use `codex login --device-auth` or an API key.
 
 ### tmux
 
-By default the agent runs in the first window of a tmux session inside the container. Press
+By default the agent runs in the first window of a tmux session inside the container.
+Non-interactive runs are the exception: `claude -p`, `codex exec`, `opencode run`, `vibe -p`,
+`shell -c`, other output-only subcommands (`AGENT_BATCH_ARGS` and `AGENT_BATCH_COMMANDS` in
+`agents/<agent>.conf`) and `--help`/`--version` run directly, because their output would vanish
+with the tmux window. `--tmux` forces tmux anyway. Press
 `prefix c` to open a bash window next to it, e.g. to run tests or watch logs while the agent works.
 Every window runs as the same unprivileged user, behind the same firewall. Use this rather than
 `docker exec`: an exec'd process skips the entrypoint's privilege drop, and in allowlist mode it
@@ -163,8 +194,10 @@ would still hold `NET_ADMIN`, so it could remove the firewall.
   natively. Copying from tmux uses OSC 52 to reach the host clipboard.
 - The config is `tmux/tmux.conf`. Your own `~/.tmux.conf` is not read.
 - tmux needs a terminal. Without one (stdin or stdout not a TTY) the agent runs directly, without
-  tmux. With tmux the launcher always exits with status 0, so pass `--no-tmux` for scripted runs
-  (`-p`, `exec`) where the agent's exit status matters.
+  tmux. With tmux the launcher always exits with status 0, so pass `--no-tmux` when the exit
+  status of an interactive-looking run matters.
+- Options that need a newer tmux than the image has (e.g. `allow-passthrough` on Ubuntu 22.04's
+  tmux 3.2a) are skipped silently.
 - `--no-tmux` turns tmux off.
 
 ### What gets mounted
@@ -175,17 +208,68 @@ Each path is mounted at the **same absolute path**, and only if it exists:
 |----------------------------------------------|------------|-----------------------------------------------------|
 | `$PWD`                                       | read-write | always                                              |
 | `~/.gitconfig`                               | read-only  | if it exists                                        |
+| `~/.config/git/config`, `ignore`, `attributes` | read-only | each file, if it exists                            |
 | `GOROOT`                                     | read-only  | if `go` is on `PATH`                                |
 | `GOPATH`                                     | `GOYOLO_GOPATH_MODE` (`rw` default, `ro`) | if `go` is on `PATH`   |
 | `GOMODCACHE` only                            | read-write | `GOYOLO_GOPATH_MODE=modcache`                       |
 | `GOCACHE`, `GOENV` file                      | rw / ro    | if they exist                                       |
+| each `GOYOLO_TOOLS` tool's install dir       | read-only  | if the tool is on `PATH` (see below)                |
+| `~/.m2`, `GRADLE_USER_HOME` or `~/.gradle`, `~/.sbt`, `~/.ivy2`, `~/.cache/coursier` | read-write | if the matching tool is in `GOYOLO_TOOLS` |
 | the selected agent's config (table below)    | read-write | that agent only, never another agent's config      |
+| each `--mount` / `GOYOLO_MOUNTS` path        | read-only, or `:rw` | when given (see below)                     |
 
 A missing agent config directory is created on the host (mode 700) so a login persists. A missing
-config file (e.g. `~/.claude.json`) is skipped.
+`.json` config file (e.g. `~/.claude.json`) is created containing `{}` (mode 600), for the same
+reason. Other missing config files are skipped.
+
+Every mount is checked, including automatic toolchains, caches, agent config and the workdir.
+System roots (`/`, `/usr`, `/etc`, ...), `$HOME` and its parents are refused, including symlink
+aliases. `/run`, `/dev`, `/proc`, `/sys` and their descendants are also refused. Unsafe cache
+settings such as `GOPATH=$HOME` or `GRADLE_USER_HOME=$HOME` stop the launcher with an error.
+Mounts must also avoid `/opt/go-yolo`, system executable and library directories, and `/etc`
+configuration paths used during privileged startup. Debian JDK installations under
+`/usr/lib/jvm` and their Java configuration directories remain supported.
+
+### Extra mounts
+
+Mount more host paths with `--mount PATH[:ro|:rw]` (repeatable) or `GOYOLO_MOUNTS` (whitespace-separated,
+same syntax). Mounts are **read-only unless you add `:rw`**:
+
+```bash
+go-yolo.sh --mount ~/src/shared-lib --mount ~/datasets:rw claude
+GOYOLO_MOUNTS="$HOME/src/shared-lib $HOME/notes:rw" go-yolo.sh claude
+```
+
+Relative paths are resolved against the current directory. A path that doesn't exist is an error.
+A symlink is mounted at its own path, with the directory it resolves to as the source.
+The mount safety checks above also apply here. Explicit mounts are added before the automatic
+ones, so `--mount ~/.m2:ro` makes the Maven cache read-only. `GOYOLO_MOUNTS` can't hold paths with spaces; use
+`--mount` for those.
 
 Your UID, GID, username and `$HOME` path are the same as on the host, so files the agent creates
 belong to you.
+
+### Host toolchains
+
+`GOYOLO_TOOLS` lists host commands to bring into the container (default `java mvn gradle`):
+
+```bash
+GOYOLO_TOOLS="java mvn gradle sbt kotlin ant" go-yolo.sh claude
+GOYOLO_TOOLS= go-yolo.sh claude                 # no host tools, no Java/Maven/Gradle caches
+```
+
+For each tool on `PATH`, the launcher follows its symlinks (`/usr/bin/java → /etc/alternatives →
+/usr/lib/jvm/...`, SDKMAN's `current`) to the real executable, which must sit in
+`<install dir>/bin`. The install dir is mounted read-only and its `bin` is put first on `PATH`. For
+`java`, a host `JAVA_HOME` takes precedence, and `JAVA_HOME` is set in the container. Directories
+that the install dir's symlinks point into (Debian's `/etc/java-N-openjdk`, `/etc/ssl/certs/java`,
+`/usr/share/java`) are mounted read-only as well. A host `GRADLE_USER_HOME` is passed into the
+container when `gradle` is listed.
+
+A tool installed straight into a system or home directory (e.g. `/usr/bin/foo`, `~/bin/foo` as a
+plain file) is skipped with a warning: mounting `/usr` or `~` would expose too much. A listed tool
+that isn't installed is skipped silently, but its cache directories are still mounted, so
+`./mvnw` and `./gradlew` projects reuse them.
 
 ## YOLO mode
 
@@ -215,14 +299,15 @@ project config. Your mounted config is never modified.
 
 In `allowlist` mode, the allowed IPv4 destinations are:
 
-- every domain in `firewall/allowlist.txt` (GitHub, Go proxy, npm, PyPI),
+- every domain in `firewall/allowlist.txt` (GitHub, Go proxy, Maven Central, Gradle, npm, PyPI),
 - the selected agent's `AGENT_DOMAINS` from `agents/<agent>.conf` (for `shell`: every agent's domains),
 - `GOYOLO_EXTRA_DOMAINS`,
 - GitHub's `web`, `api` and `git` IP ranges from `https://api.github.com/meta`,
 - DNS (port 53) to the nameservers in the container's `/etc/resolv.conf`.
 
 All IPv6 traffic is dropped. Other connections are rejected right away, so tools fail fast. On
-startup the firewall checks that `https://example.com` fails and `https://api.github.com` works.
+startup the firewall checks that `https://api.github.com` works and that `example.com` (or
+`example.net`/`example.org`, at an address outside the allowlist) is blocked.
 
 ### Adding a domain
 
@@ -246,13 +331,16 @@ Permanently: add it to `AGENT_DOMAINS` in `agents/<agent>.conf`, or for every ag
    AGENT_ENV=()                      # KEY=VALUE, always set
    AGENT_YOLO_ENV=()                 # KEY=VALUE, only with --yolo
    AGENT_MOUNTS=("$HOME/.mytool")    # mounted read-write at the same path
+   AGENT_BATCH_ARGS=(--print)        # non-interactive flags (anywhere): run without tmux
+   AGENT_BATCH_COMMANDS=(run)        # non-interactive subcommands (first arg): run without tmux
    AGENT_DOMAINS=(api.mytool.dev)    # allowed in --net allowlist mode
    ```
 
    Put every setting that turns off prompts in `AGENT_YOLO_ARGS`/`AGENT_YOLO_ENV`, never in
-   `AGENT_ARGS`/`AGENT_ENV`. A missing `AGENT_MOUNTS` entry whose name (ignoring a leading dot)
-   contains a dot, such as `.mytool.json`, is treated as a file and skipped. Anything else is treated
-   as a directory and created on the host.
+   `AGENT_ARGS`/`AGENT_ENV`. A missing `AGENT_MOUNTS` entry ending in `.json` is created
+   containing `{}`. Another missing entry whose name (ignoring a leading dot) contains a dot, such
+   as `.mytool.toml`, is treated as a file and skipped. Anything else is treated as a directory and
+   created on the host.
 2. Add a system-wide install line to the `Dockerfile` (`npm install -g …`, `uv tool install …`, or
    a binary in `/usr/local/bin`). Never install into a home directory.
 3. Add the name to `AGENTS` in `go-yolo.sh` and to the agent check in `entrypoint.sh`.
@@ -265,14 +353,39 @@ The agents' auto-updaters are turned off. To update everything:
 go-yolo.sh --rebuild shell
 ```
 
-`--rebuild` also pulls a fresh base image. To pin versions, set any of `GOYOLO_CLAUDE_VERSION`,
+`--rebuild` pulls the current base image and disables Docker's build cache, so package and agent
+installation steps run again even when the base image has not changed. Ordinary builds keep using
+the cache. To pin versions, set any of `GOYOLO_CLAUDE_VERSION`,
 `GOYOLO_CODEX_VERSION`, `GOYOLO_OPENCODE_VERSION`, `GOYOLO_VIBE_VERSION`, `GOYOLO_UV_VERSION` or
 `GOYOLO_NODE_MAJOR` (default 24) for the rebuild, e.g.
 `GOYOLO_CLAUDE_VERSION=2.1.296 go-yolo.sh --rebuild claude`.
 
+Node.js comes from nodejs.org. Its `SHASUMS256.txt` is checked against the Node.js release keys
+fetched from `github.com/nodejs/release-keys`, so a build needs both hosts reachable.
+
 Images are tagged `go-yolo:<distro>-<codename>-<hash>` (plus `go-yolo:<distro>-<codename>`). The
 hash covers the `Dockerfile`, `entrypoint.sh`, `scripts/`, `agents/`, `firewall/` and `tmux/`, so editing
 any of them triggers a rebuild. Old images are not deleted automatically: `docker image ls go-yolo`.
+
+## Checks
+
+Run launcher regressions without Docker or host toolchains:
+
+```bash
+bash tests/run.sh
+```
+
+It uses stub `go` and `docker` commands from `tests/fixtures/` and never changes your real config.
+The tmux selection checks need `script(1)` (util-linux) and are skipped without it.
+
+After building an image, check privilege dropping, executable shadows and the allowlist firewall:
+
+```bash
+bash tests/docker.sh go-yolo:debian-trixie    # use your image's distro/codename tag
+```
+
+The container checks use temporary fixtures, require working allowlist networking, and report a
+skip when Docker is unavailable.
 
 ## Known limitations
 

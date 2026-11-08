@@ -21,10 +21,22 @@ agents:  ${AGENTS[*]}
 opts:    --net open|allowlist|none   (default: open)
          --rebuild                   force image rebuild
          --yolo                      turn off the agent's permission prompts (default: off)
-         --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY;
+         --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY,
+                                     except for non-interactive runs such as claude -p;
                                      prefix c: extra shell)
+         --tmux                      always use tmux, even for non-interactive runs
+         --mount PATH[:ro|:rw]       also mount PATH at the same path (default: ro; repeatable)
          --dry-run                   print the docker command and exit
          -h | --help
+
+env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put on PATH
+                                     (default shown; add e.g. sbt kotlin ant, or set empty)
+         GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
+         GOYOLO_GOPATH_MODE=rw|ro|modcache  how GOPATH is mounted (default: rw)
+         GOYOLO_EXTRA_DOMAINS="a.example ..."  more domains for --net allowlist
+         GOYOLO_QUIET=1                     don't print the mount summary line
+         GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
+                                     version pins for the image build (use with --rebuild)
 
 alias commands (no agent needed):
   go-yolo.sh --print-aliases         print alias definitions to stdout
@@ -118,6 +130,7 @@ YOLO=0
 USE_TMUX=1
 TMUX_FORCED=0
 DRY_RUN=0
+USER_MOUNTS=()
 
 while (($#)); do
   case $1 in
@@ -129,6 +142,10 @@ while (($#)); do
     --yolo) YOLO=1; shift ;;
     --tmux) USE_TMUX=1; TMUX_FORCED=1; shift ;;
     --no-tmux) USE_TMUX=0; TMUX_FORCED=0; shift ;;
+    --mount)
+      (($# >= 2)) || die "--mount needs a value (PATH[:ro|:rw])"
+      USER_MOUNTS+=("$2"); shift 2 ;;
+    --mount=*) USER_MOUNTS+=("${1#*=}"); shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --print-aliases) alias_lines; exit 0 ;;
@@ -218,7 +235,7 @@ ensure_image() {
       local env_name="GOYOLO_$var"
       if [[ -n ${!env_name:-} ]]; then build+=(--build-arg "$var=${!env_name}"); fi
     done
-    if ((REBUILD)); then build+=(--pull); fi
+    if ((REBUILD)); then build+=(--pull --no-cache); fi
     build+=(-t "$IMAGE" -t "$IMAGE_BASE" "$REPO_DIR")
     note "building $IMAGE from $BASE_IMAGE"
     "${build[@]}" >&2
@@ -246,19 +263,58 @@ csv_field() {
 
 # add_mount PATH rw|ro — bind PATH at the same path in the container.
 add_mount() {
-  local path=$1 mode=$2 spec
-  [[ $path == /* ]] || die "mount path must be absolute: $path"
-  [[ $path != *$'\n'* ]] || die "mount path contains a newline: $path"
-  [[ $path == / ]] || path=${path%/}
+  local path=$1 mode=$2 spec real
+  validate_mount_path "$path"
+  # Resolve the source before lexical normalization: symlink/.. follows the symlink first.
+  real="$(realpath -m -- "$path")"
+  path="$(realpath -ms -- "$path")"
   [[ -z ${MOUNTED[$path]:-} ]] || return 0
   MOUNTED[$path]=$mode
   MOUNT_ORDER+=("$path")
-  spec="type=bind,$(csv_field "source=$path"),$(csv_field "target=$path")"
+  spec="type=bind,$(csv_field "source=$real"),$(csv_field "target=$path")"
   if [[ $mode == ro ]]; then spec+=",readonly"; fi
   MOUNTS+=(--mount "$spec")
 }
 
 is_under() { [[ $1 == "$2" || $1 == "$2"/* ]]; }
+
+# System directories (and $HOME or its ancestors) that must never be bind-mounted from the host.
+is_system_dir() {
+  case $1 in
+    # These locations are used before the entrypoint drops privileges. Protect
+    # descendants too: a single bind-mounted executable/library can shadow the image.
+    /opt/go-yolo|/opt/go-yolo/*) return 0 ;;
+    /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*) return 0 ;;
+    /usr/bin/*|/usr/sbin/*|/usr/libexec/*) return 0 ;;
+    /usr/local/bin/*|/usr/local/sbin/*|/usr/local/lib/*|/usr/lib32/*|/usr/lib64/*) return 0 ;;
+    /usr/lib/*)
+      # Debian JDKs live here; their external symlink targets are checked separately.
+      case $1 in /usr/lib/jvm|/usr/lib/jvm/*) ;; *) return 0 ;; esac ;;
+    /etc/*)
+      # Keep the data directories needed by Debian's host-mounted JDKs usable.
+      case $1 in
+        /etc/java-*-openjdk|/etc/java-*-openjdk/*|/etc/ssl/certs/java|/etc/ssl/certs/java/*) ;;
+        *) return 0 ;;
+      esac ;;
+    /run|/run/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*) return 0 ;;
+    /|/bin|/sbin|/lib|/lib32|/lib64|/etc|/etc/alternatives|/opt|/var|/tmp|/home) return 0 ;;
+    /usr|/usr/bin|/usr/sbin|/usr/lib|/usr/lib32|/usr/lib64|/usr/libexec|/usr/lib/*-linux-gnu*) return 0 ;;
+    /usr/share|/usr/share/doc|/usr/share/man|/usr/share/info|/usr/include) return 0 ;;
+    /usr/local|/usr/local/bin|/usr/local/sbin|/usr/local/lib|/usr/local/share) return 0 ;;
+  esac
+  is_under "$HOME_DIR" "$1" || is_under "$HOME_REAL" "$1"
+}
+
+validate_mount_path() {
+  local path=$1 real normalized
+  [[ $path == /* ]] || die "mount path must be absolute: $path"
+  [[ $path != *$'\n'* ]] || die "mount path contains a newline: $path"
+  real="$(realpath -m -- "$path")"
+  normalized="$(realpath -ms -- "$path")"
+  if is_system_dir "$normalized" || is_system_dir "$real"; then
+    die "refusing to mount $path: it is a system directory, your home directory or one of its parents"
+  fi
+}
 
 # Workdir: refuse $HOME, / or any ancestor of $HOME — that would expose too much.
 WORKDIR=$PWD
@@ -271,7 +327,27 @@ for dir in "$WORKDIR" "$WORKDIR_REAL"; do
 done
 add_mount "$WORKDIR" rw
 
+# Extra mounts (GOYOLO_MOUNTS, then --mount): PATH[:ro|:rw], read-only by default. Added before
+# the automatic mounts, so an explicit mode wins for a path that would be mounted anyway.
+# read -d '': split on all whitespace, newlines included (read stops at the first newline).
+read -d '' -ra env_mounts <<<"${GOYOLO_MOUNTS:-}" || true
+for spec in "${env_mounts[@]}" "${USER_MOUNTS[@]}"; do
+  case $spec in
+    *:ro) path=${spec%:ro}; mode=ro ;;
+    *:rw) path=${spec%:rw}; mode=rw ;;
+    *) path=$spec; mode=ro ;;
+  esac
+  [[ -n $path ]] || die "empty mount path in '$spec'"
+  [[ -e $path ]] || die "mount path does not exist: $path"
+  if [[ $path != /* ]]; then path="$PWD/$path"; fi
+  add_mount "$path" "$mode"
+done
+
 if [[ -f $HOME_DIR/.gitconfig ]]; then add_mount "$HOME_DIR/.gitconfig" ro; fi
+# XDG git config. Only these files: the directory may also hold a credential store.
+for file in config ignore attributes; do
+  if [[ -f $HOME_DIR/.config/git/$file ]]; then add_mount "$HOME_DIR/.config/git/$file" ro; fi
+done
 
 # Go toolchain and caches.
 GO_ENV=()
@@ -306,9 +382,90 @@ else
   warn "go not found on PATH; starting without the Go toolchain"
 fi
 
+# Other host toolchains (GOYOLO_TOOLS): each tool's install dir is mounted read-only and its
+# bin/ is put on PATH. A set but empty GOYOLO_TOOLS mounts none.
+TOOLS=${GOYOLO_TOOLS-java mvn gradle}
+TOOL_ENV=()
+TOOL_PATH=""
+# Cache dirs (newline-separated) mounted read-write for each listed tool, even when the tool
+# itself isn't installed, so ./mvnw and ./gradlew projects reuse them too.
+declare -A TOOL_CACHES=(
+  [mvn]="$HOME_DIR/.m2"
+  [gradle]="${GRADLE_USER_HOME:-$HOME_DIR/.gradle}"
+  [sbt]="$HOME_DIR/.sbt"$'\n'"$HOME_DIR/.ivy2"$'\n'"$HOME_DIR/.cache/coursier"
+)
+
+
+# Install dir of tool NAME: the parent of the bin/ directory its executable resolves into.
+tool_home() {
+  local name=$1 bin real home
+  if [[ $name == java && -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
+    readlink -f "$JAVA_HOME"
+    return 0
+  fi
+  bin="$(command -v "$name" 2>/dev/null)" || return 1
+  [[ $bin == /* ]] || return 1
+  real="$(readlink -f "$bin")" || return 1
+  [[ ${real%/*} == */bin ]] || return 1
+  home=${real%/bin/*}
+  # Java 8 layout: <jdk>/jre/bin/java — prefer the JDK, which has javac.
+  if [[ $name == java && $home == */jre && -x ${home%/jre}/bin/javac ]]; then home=${home%/jre}; fi
+  printf '%s' "${home:-/}"
+}
+
+# Mount DIR read-only plus the directories its symlinks point into outside DIR (Debian JDKs link
+# into /etc/java-N-openjdk and /etc/ssl/certs/java, Debian's maven into /usr/share/java).
+add_tree_mount() {
+  local dir=$1 link target parent
+  local -A seen=()
+  add_mount "$dir" ro
+  while IFS= read -r -d '' link; do
+    target="$(readlink -f "$link")" || continue
+    [[ -e $target ]] && ! is_under "$target" "$dir" || continue
+    parent=${target%/*}
+    seen[${parent:-/}]=1
+  done < <(find "$dir" -type l -print0 2>/dev/null)
+  while IFS= read -r parent; do
+    [[ -n $parent ]] && ! is_system_dir "$parent" || continue
+    local mounted covered=0
+    for mounted in "${MOUNT_ORDER[@]}"; do
+      if is_under "$parent" "$mounted"; then covered=1; break; fi
+    done
+    if ((!covered)); then add_mount "$parent" ro; fi
+  done < <(printf '%s\n' "${!seen[@]}" | awk '{ print length, $0 }' | sort -n | cut -d' ' -f2-)
+}
+
+read -d '' -ra TOOL_NAMES <<<"$TOOLS" || true
+for tool in "${TOOL_NAMES[@]}"; do
+  [[ $tool =~ ^[A-Za-z0-9._+-]+$ ]] || die "invalid tool name '$tool' in GOYOLO_TOOLS"
+  if home="$(tool_home "$tool")"; then
+    if is_system_dir "$home"; then
+      warn "not mounting $tool: it is installed straight into $home/bin (only <install dir>/bin layouts are supported)"
+    else
+      add_tree_mount "$home"
+      TOOL_PATH+="${TOOL_PATH:+:}$home/bin"
+      if [[ $tool == java ]]; then TOOL_ENV+=(-e "JAVA_HOME=$home"); fi
+    fi
+  fi
+  if [[ -n ${TOOL_CACHES[$tool]:-} ]]; then
+    mapfile -t caches <<<"${TOOL_CACHES[$tool]}"
+    for cache in "${caches[@]}"; do
+      if [[ -d $cache ]]; then add_mount "$cache" rw; fi
+    done
+  fi
+done
+if [[ -n $TOOL_PATH ]]; then TOOL_ENV+=(-e "GOYOLO_TOOL_PATH=$TOOL_PATH"); fi
+if [[ -n ${GRADLE_USER_HOME:-} && " ${TOOL_NAMES[*]} " == *" gradle "* ]]; then
+  TOOL_ENV+=(-e "GRADLE_USER_HOME=$GRADLE_USER_HOME")
+fi
+
 # Agent config: only the selected agent's AGENT_MOUNTS, never another agent's.
 AGENT_MOUNTS=()
+# Non-interactive runs (no tmux): flags anywhere in the agent args, subcommands as the first.
+AGENT_BATCH_ARGS=(-c)  # shell: bash -c runs a command and exits
+AGENT_BATCH_COMMANDS=()
 if [[ $AGENT != shell ]]; then
+  AGENT_BATCH_ARGS=()
   # shellcheck source=/dev/null
   source "$REPO_DIR/agents/$AGENT.conf"
 fi
@@ -320,7 +477,18 @@ looks_like_file() {
 }
 
 for path in "${AGENT_MOUNTS[@]}"; do
+  # Validate before creating a missing config directory on the host.
+  validate_mount_path "$path"
   if [[ -e $path ]]; then
+    add_mount "$path" rw
+  elif [[ $path == *.json ]]; then
+    # Without the mount the agent would write this file into the container's home and lose it.
+    if ((DRY_RUN)); then
+      note "would create $path (mode 600, containing {}) so it persists"
+    else
+      (umask 077 && printf '{}\n' >"$path")
+      note "created $path (mode 600, containing {}) so it persists"
+    fi
     add_mount "$path" rw
   elif looks_like_file "$path"; then
     note "skipping $path (does not exist)"
@@ -352,6 +520,19 @@ esac
 
 PWD_HASH="$(printf '%s' "$WORKDIR" | sha256sum | cut -c1-8)"
 RAND_SUFFIX="$(printf '%04x' $((RANDOM % 65536)))"
+
+# A non-interactive run (claude -p, codex exec, ...) would print into a tmux window that
+# closes as soon as the agent exits, so run it directly unless --tmux was given.
+if ((USE_TMUX && !TMUX_FORCED && $#)); then
+  for batch in "${AGENT_BATCH_COMMANDS[@]}"; do
+    if [[ $1 == "$batch" ]]; then USE_TMUX=0; fi
+  done
+  for arg in "$@"; do
+    for batch in --help --version "${AGENT_BATCH_ARGS[@]}"; do
+      if [[ $arg == "$batch" ]]; then USE_TMUX=0; fi
+    done
+  done
+fi
 
 CMD=(docker run --rm)
 if [[ -t 0 && -t 1 ]]; then
@@ -389,7 +570,7 @@ if [[ -n ${TERM:-} ]] && command -v infocmp >/dev/null 2>&1 \
   && terminfo="$(infocmp -x "$TERM" 2>/dev/null)"; then
   CMD+=(-e "GOYOLO_TERMINFO=$terminfo")
 fi
-CMD+=("${GO_ENV[@]}" "${MOUNTS[@]}" "${NET_ARGS[@]}" "$IMAGE" "$@")
+CMD+=("${GO_ENV[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}" "${NET_ARGS[@]}" "$IMAGE" "$@")
 
 if ((YOLO)); then
   if [[ $NET == open ]]; then

@@ -3,6 +3,8 @@
 # sets up the firewall (--net allowlist), then drops all privileges and execs the agent.
 set -euo pipefail
 
+# Root must never search host-mounted (and potentially agent-writable) executables.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 GOYOLO_DIR=/opt/go-yolo
 
 die() { printf 'go-yolo[entrypoint]: error: %s\n' "$*" >&2; exit 1; }
@@ -67,7 +69,7 @@ if [[ -n $existing_user && $existing_user != "$GOYOLO_USER" ]]; then
   # Also drop its supplementary groups (adm, sudo, ... for "ubuntu").
   usermod -l "$GOYOLO_USER" -d "$GOYOLO_HOME" -g "$GOYOLO_GID" -G "" -s /bin/bash "$existing_user"
 elif [[ -n $existing_user ]]; then
-  usermod -d "$GOYOLO_HOME" -g "$GOYOLO_GID" -s /bin/bash "$GOYOLO_USER"
+  usermod -d "$GOYOLO_HOME" -g "$GOYOLO_GID" -G "" -s /bin/bash "$GOYOLO_USER"
 else
   # The name may exist with another UID; the image user is expendable.
   if getent passwd "$GOYOLO_USER" >/dev/null; then userdel "$GOYOLO_USER"; fi
@@ -76,7 +78,7 @@ fi
 
 # Docker creates missing parents of mount points as root ($HOME, $HOME/.config, ...).
 # Walk from $HOME down to each mount point and chown every root-owned directory on the
-# way that is not itself a mount point. Never recurse, never touch a mount.
+# way that is outside host mounts. Never recurse into a mount or a symlink.
 declare -A IS_MOUNT=() CHECKED=()
 while read -r _ _ _ _ mount_point _; do
   mount_point=${mount_point//\\040/ }
@@ -87,10 +89,16 @@ while read -r _ _ _ _ mount_point _; do
 done </proc/self/mountinfo
 
 claim_dir() {
-  local dir=$1
+  local dir=$1 ancestor=$1
   [[ -z ${CHECKED[$dir]:-} ]] || return 0
   CHECKED[$dir]=1
-  [[ -z ${IS_MOUNT[$dir]:-} && -d $dir && ! -L $dir ]] || return 0
+  # A non-mount directory can still belong to a host bind mount. Exclude
+  # ancestors too (except /, which is the container's own root filesystem).
+  while [[ $ancestor != / && -n $ancestor ]]; do
+    [[ -z ${IS_MOUNT[$ancestor]:-} && ! -L $ancestor ]] || return 0
+    ancestor=${ancestor%/*}
+  done
+  [[ -d $dir ]] || return 0
   if [[ $(stat -c %u "$dir") == 0 ]]; then chown "$GOYOLO_UID:$GOYOLO_GID" "$dir"; fi
 }
 
@@ -107,6 +115,7 @@ for root in "$GOYOLO_HOME" /tmp /var/tmp; do
     rel=${mount_point#"$root"/}
     dir=$root
     while [[ $rel == */* ]]; do
+      [[ -z ${IS_MOUNT[$dir]:-} && ! -L $dir ]] || break
       dir+="/${rel%%/*}"
       rel=${rel#*/}
       claim_dir "$dir"
@@ -118,13 +127,15 @@ done
 # 3. Environment for the user
 # ---------------------------------------------------------------------------
 
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-if [[ -n ${GOPATH:-} ]]; then PATH="${GOPATH%%:*}/bin:$PATH"; fi
-if [[ -n ${GOROOT:-} ]]; then PATH="$GOROOT/bin:$PATH"; fi
-export PATH
+AGENT_PATH=$PATH
+if [[ -n ${GOPATH:-} ]]; then AGENT_PATH="${GOPATH%%:*}/bin:$AGENT_PATH"; fi
+if [[ -n ${GOROOT:-} ]]; then AGENT_PATH="$GOROOT/bin:$AGENT_PATH"; fi
+# Host toolchains mounted by the launcher (GOYOLO_TOOLS).
+if [[ -n ${GOYOLO_TOOL_PATH:-} ]]; then AGENT_PATH="$GOYOLO_TOOL_PATH:$AGENT_PATH"; fi
+unset GOYOLO_TOOL_PATH
 
 # Login shells reset PATH in /etc/profile; restore ours afterwards.
-printf 'export PATH=%q\n' "$PATH" >/etc/profile.d/zz-go-yolo.sh
+printf 'export PATH=%q\n' "$AGENT_PATH" >/etc/profile.d/zz-go-yolo.sh
 
 # The host's locale may not exist in the image; fall back to C.UTF-8.
 if [[ -n ${LANG:-} ]]; then
@@ -157,9 +168,6 @@ export_pairs() {
     export "${pair?}"
   done
 }
-export_pairs "${AGENT_ENV[@]}"
-if ((YOLO)); then export_pairs "${AGENT_YOLO_ENV[@]}"; fi
-
 # ---------------------------------------------------------------------------
 # 4. Firewall
 # ---------------------------------------------------------------------------
@@ -186,7 +194,7 @@ if [[ $GOYOLO_NET == allowlist ]]; then
     domains+=("${AGENT_DOMAINS[@]}")
   fi
 
-  read -r -a extra <<<"${GOYOLO_EXTRA_DOMAINS//,/ }" || true
+  read -d '' -r -a extra <<<"${GOYOLO_EXTRA_DOMAINS//,/ }" || true
   domains+=("${extra[@]}")
 
   "$GOYOLO_DIR/scripts/init-firewall.sh" "${domains[@]}" \
@@ -196,6 +204,10 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Drop privileges and exec
 # ---------------------------------------------------------------------------
+
+# Agent environment overrides must not influence privileged firewall commands.
+export_pairs "${AGENT_ENV[@]}"
+if ((YOLO)); then export_pairs "${AGENT_YOLO_ENV[@]}"; fi
 
 if [[ $GOYOLO_AGENT == shell ]]; then
   cmd=(bash -l)
@@ -220,6 +232,6 @@ fi
 
 # tini runs as PID 1 *after* the privilege drop (instead of docker run --init), so no
 # process in the container keeps root or NET_ADMIN.
-exec setpriv --reuid="$GOYOLO_UID" --regid="$GOYOLO_GID" --init-groups \
+exec /usr/bin/setpriv --reuid="$GOYOLO_UID" --regid="$GOYOLO_GID" --init-groups \
   --inh-caps=-all --bounding-set=-all --no-new-privs \
-  -- tini -g -- "${cmd[@]}"
+  -- /usr/bin/env "PATH=$AGENT_PATH" /usr/bin/tini -g -- "${cmd[@]}"

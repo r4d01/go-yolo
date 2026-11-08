@@ -20,22 +20,28 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client less procps jq ripgrep \
       iptables ipset dnsutils iproute2 util-linux tini tmux ncurses-term \
-      build-essential python3 xz-utils \
+      build-essential python3 xz-utils gpgv \
  && rm -rf /var/lib/apt/lists/*
 
 # Node.js from nodejs.org: distro packages are too old on some bases (Claude Code needs >= 22).
+# SHASUMS256.txt is checked against the release keys from github.com/nodejs/release-keys,
+# a second origin, so a compromised nodejs.org alone can't swap the tarball.
 ARG NODE_MAJOR=24
 RUN case "$(dpkg --print-architecture)" in \
       amd64) arch=x64 ;; arm64) arch=arm64 ;; \
       *) echo "unsupported architecture" >&2; exit 1 ;; \
     esac \
  && base="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x" \
- && tarball="$(curl -fsSL "$base/SHASUMS256.txt" | awk -v a="linux-${arch}.tar.xz" '$2 ~ a"$" {print $2}')" \
+ && tmp="$(mktemp -d)" && cd "$tmp" \
+ && curl -fsSLo keys.kbx https://github.com/nodejs/release-keys/raw/HEAD/gpg-only-active-keys/pubring.kbx \
+ && curl -fsSLO "$base/SHASUMS256.txt" -fsSLO "$base/SHASUMS256.txt.sig" \
+ && gpgv --keyring "$tmp/keys.kbx" SHASUMS256.txt.sig SHASUMS256.txt \
+ && tarball="$(awk -v a="linux-${arch}.tar.xz" '$2 ~ a"$" {print $2}' SHASUMS256.txt)" \
  && curl -fsSLO "$base/$tarball" \
- && curl -fsSL "$base/SHASUMS256.txt" | grep " ${tarball}\$" | sha256sum -c - \
+ && grep " ${tarball}\$" SHASUMS256.txt | sha256sum -c - \
  && tar -xJf "$tarball" -C /usr/local --strip-components=1 --no-same-owner \
       --exclude='*/CHANGELOG.md' --exclude='*/LICENSE' --exclude='*/README.md' \
- && rm -f "$tarball" \
+ && cd / && rm -rf "$tmp" \
  && node --version && npm --version
 
 # uv (official installer), installed system-wide.

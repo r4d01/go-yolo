@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+[[ $(/usr/bin/id -u) == "$GOYOLO_UID" && $(/usr/bin/id -g) == "$GOYOLO_GID" ]]
+[[ $PATH == /home/goyolo-test/tools/bin:/home/goyolo-test/toolchain/bin:/home/goyolo-test/go/bin:* ]]
+[[ ! -e /home/goyolo-test/root-shadow ]]
+for status in /proc/self/status /proc/1/status; do
+  /usr/bin/awk '
+    /^Cap(Eff|Prm|Bnd):/ { if ($2 !~ /^0+$/) exit 1; caps++ }
+    /^NoNewPrivs:/ { if ($2 != 1) exit 1; nnp++ }
+    END { if (caps != 3 || nnp != 1) exit 1 }
+  ' "$status"
+done
+if [[ $GOYOLO_NET == allowlist ]]; then
+  /usr/bin/curl -fsS --max-time 10 -o /dev/null https://api.github.com
+  if /usr/bin/curl -sS --max-time 5 -o /dev/null https://example.com 2>/dev/null; then exit 1; fi
+  if /usr/sbin/iptables -F 2>/dev/null; then exit 1; fi
+fi
+printf 'Privilege and PATH checks passed (%s, %s).\n' "$GOYOLO_AGENT" "$GOYOLO_NET"
