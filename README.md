@@ -37,6 +37,8 @@ env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put
 
 commands (no agent needed):
 ./go-yolo.sh --prune [--yes]         list go-yolo images, remove stale ones (--yes: without asking)
+./go-yolo.sh --parity                run the same probes on the host and in the container and
+                                     compare them (exit status 1 if anything differs)
 ./go-yolo.sh --print-aliases         print alias definitions to stdout
 ./go-yolo.sh --install-aliases       add the aliases to your shell rc file(s)
 ./go-yolo.sh --uninstall-aliases     remove them again
@@ -250,6 +252,30 @@ exclude  env      HTTPS_PROXY
 The confirmed plan is stored in `.go-yolo/plan`. The project image's tag
 (`go-yolo:<project>-<path hash>-<plan hash>`) includes a hash of the plan's build-time items, so
 a change to them builds a new image; a change to `env` items only needs your confirmation.
+
+### Checking parity
+
+`go-yolo.sh --parity` (from the project root, like a normal run) runs the same probes on the
+host and in the project's container and shows each result:
+
+```
+go-yolo: the same probes on the host and in the container (go-yolo:myapp-d0c6fbb2-a02bf713):
+  ✓ user                         me (1000:1000)
+  ✓ directory                    /home/me/src/myapp
+  ✗ umask                        host: 0002
+                                 container: 0022
+  ✓ glibc                        glibc 2.41
+  ✓ time zone                    Europe/Prague (CET+0100)
+  ✓ tool git                     git version 2.47.3
+  ✓ env TZ                       Europe/Prague
+go-yolo: warning: 1 of 7 probes differ
+```
+
+The probes cover the user, home, working directory, umask, architecture, glibc, locale, time
+zone, the base tools (gcc, make, git, python3), and every env variable, package and CA
+certificate in the plan (secret values only as a hash). The exit status is 1 if anything
+differs. Each pack can add probes (`<pack>_probe` in `packs/<pack>.sh`); both sides run the same
+code, copied into the container.
 
 ### tmux
 
@@ -487,6 +513,7 @@ too.
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
 | `lib/prune.sh`      | `--prune`: image status, removal                                   |
+| `lib/parity.sh`     | `--parity`: runs the packs' probes on both sides and compares them |
 | `packs/host.sh`     | plan items every project gets (base, CAs, time zone, proxies, extras) |
 
 Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)

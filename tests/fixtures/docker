@@ -36,3 +36,8 @@ fi
 if [[ $* == run\ --rm\ --entrypoint\ dpkg-query\ * ]]; then
   if [[ -n ${DPKG_BASE_FIXTURE:-} ]]; then cat "$DPKG_BASE_FIXTURE"; fi
 fi
+# --parity's container run (`docker run ... IMAGE -c SCRIPT`): with DOCKER_TEST_RUN_SCRIPT=1 run
+# the script here, edited by the sed script DOCKER_TEST_PARITY_SED (to fake a difference).
+if [[ $1 == run && ${DOCKER_TEST_RUN_SCRIPT:-} == 1 && ${*: -2:1} == -c ]]; then
+  bash -c "${!#}" | sed -e "${DOCKER_TEST_PARITY_SED:-}"
+fi

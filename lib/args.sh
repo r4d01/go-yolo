@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Command-line options.
 #
-# Sets: NET REBUILD YOLO USE_TMUX TMUX_FORCED DRY_RUN COLOR YES PRUNE USER_MOUNTS
+# Sets: NET REBUILD YOLO USE_TMUX TMUX_FORCED DRY_RUN COLOR YES PRUNE PARITY USER_MOUNTS
 #       AGENT            the selected agent (one of AGENTS)
 #       PASSTHROUGH_ARGS everything after the agent, passed to it unchanged
 
@@ -34,6 +34,8 @@ env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put
 
 commands (no agent needed):
   go-yolo.sh --prune [--yes]         list go-yolo images, remove stale ones (--yes: without asking)
+  go-yolo.sh --parity                run the same probes on the host and in the container and
+                                     compare them (exit status 1 if anything differs)
   go-yolo.sh --print-aliases         print alias definitions to stdout
   go-yolo.sh --install-aliases       add the aliases to your shell rc file(s)
   go-yolo.sh --uninstall-aliases     remove them again
@@ -51,6 +53,7 @@ DRY_RUN=0
 COLOR=auto
 YES=0
 PRUNE=0
+PARITY=0
 USER_MOUNTS=()
 AGENT=""
 PASSTHROUGH_ARGS=()
@@ -78,6 +81,7 @@ parse_args() {
       --color=*) COLOR=${1#*=}; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --prune) PRUNE=1; shift ;;
+      --parity) PARITY=1; shift ;;
       -h|--help) usage; exit 0 ;;
       --print-aliases) alias_lines; exit 0 ;;
       --install-aliases) install_aliases; exit 0 ;;
@@ -94,6 +98,12 @@ parse_args() {
     open|allowlist|none) ;;
     *) die "invalid --net value '$NET' (use open, allowlist or none)" ;;
   esac
+
+  if ((PARITY)); then
+    (($# == 0)) || die "--parity runs its own probes in a shell container; don't name an agent"
+    AGENT=shell
+    return 0
+  fi
 
   if (($# == 0)); then
     usage >&2

@@ -41,6 +41,11 @@ decide_tmux() {
     USE_TMUX=0
   fi
 
+  # --parity reads the container's output, so it gets no terminal.
+  if ((PARITY)); then
+    TTY_ARGS=()
+    return 0
+  fi
   if [[ -t 0 && -t 1 ]]; then
     TTY_ARGS=(-it)
     return 0

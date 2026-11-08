@@ -37,6 +37,8 @@ source "$REPO_DIR/lib/agent.sh"
 source "$REPO_DIR/lib/run.sh"
 # shellcheck source=lib/prune.sh
 source "$REPO_DIR/lib/prune.sh"
+# shellcheck source=lib/parity.sh
+source "$REPO_DIR/lib/parity.sh"
 # shellcheck source=packs/host.sh
 source "$REPO_DIR/packs/host.sh"
 
@@ -67,6 +69,7 @@ if ((!DRY_RUN)); then
   confirm_plan
 fi
 choose_project_image
+if ((PARITY)); then prepare_parity; fi   # probes instead of an agent
 
 set_network_args
 decide_tmux
@@ -79,5 +82,9 @@ if ((DRY_RUN)); then
 fi
 
 ensure_project_image
+if ((PARITY)); then
+  run_parity
+  exit
+fi
 print_banner
 exec "${CMD[@]}"

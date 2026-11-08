@@ -76,3 +76,45 @@ host_timezone() {
   fi
   [[ -n $zone ]] && printf '%s' "$zone"
 }
+
+# --parity probe (see lib/parity.sh). It runs on the host and, as a copy, in the container, so
+# it may only use the plan (PLAN) and commands both sides have.
+host_probe() {
+  local line kind group method name value flags tool version
+  printf 'user\t%s (%s:%s)\n' "$(id -un)" "$(id -u)" "$(id -g)"
+  printf 'home\t%s\n' "$HOME"
+  printf 'directory\t%s\n' "$PWD"
+  printf 'umask\t%s\n' "$(umask)"
+  printf 'architecture\t%s\n' "$(uname -m)"
+  printf 'glibc\t%s\n' "$(getconf GNU_LIBC_VERSION 2>/dev/null)"
+  printf 'locale\t%s\n' "${LANG:-(unset)}"
+  printf 'time zone\t%s (%s)\n' "${TZ:-(unset)}" "$(date +%Z%z)"
+  for tool in gcc make git python3; do
+    version="(missing)"
+    if command -v "$tool" >/dev/null 2>&1; then version="$("$tool" --version 2>&1 | head -n 1)"; fi
+    printf 'tool %s\t%s\n' "$tool" "$version"
+  done
+
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name value flags <<<"$line"
+    if [[ $method == skip ]]; then continue; fi
+    case $kind in
+      env)
+        if [[ $value == sha256:* ]]; then
+          printf 'env %s\tsha256:%s\n' "$name" "$(printf '%s' "${!name-}" | sha256sum | cut -c1-12)"
+        else
+          printf 'env %s\t%s\n' "$name" "${!name-(unset)}"
+        fi
+        ;;
+      package)
+        version="$(dpkg-query -W -f='${Version}' "$name" 2>/dev/null)" || version="(not installed)"
+        printf 'package %s\t%s\n' "$name" "${version:-(not installed)}"
+        ;;
+      cert)
+        version="(missing)"
+        if [[ -r $name ]]; then version="sha256:$(sha256sum <"$name" | cut -c1-12)"; fi
+        printf 'cert %s\t%s\n' "$name" "$version"
+        ;;
+    esac
+  done
+}
