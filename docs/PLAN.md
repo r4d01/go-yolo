@@ -297,15 +297,18 @@ Part 2's phases each leave go-yolo working. Each updates the README and the test
   replacing `GOYOLO_TOOLS`.
   Checked on a Gradle project with a JDK 25 toolchain, offline after one online run.
 
-### 4.2 Phase A: restructure (no behaviour change)
+### 4.2 Phase A: restructure (no behaviour change) — done
 
 From the part-1 review; makes part 2 easier to build and to read.
 
-- Split `lib/plan.sh` (655 lines) into `plan.sh`, `kinds.sh`, `apt.sh`, `confirm.sh`; declare the
-  kinds in one table; separate `attrs` from `notes`; one helper to loop over plan items instead of
-  the repeated `IFS=$'\t' read -r …`.
+- Split `lib/plan.sh` (655 lines) into `plan.sh`, `kinds.sh`, `apt.sh`, `items.sh`, `confirm.sh`;
+  declare the kinds and flags in tables; behaviour flags only through `has_flag`; `plan_lines`
+  instead of most repeated parsing loops. The Dockerfile sections and the `docker run` arguments
+  stay explicit functions in `image.sh` and `run.sh` (more readable than a dispatch table). —
+  done; dry-run plans and commands byte-identical.
 - Rename `packs/` to `catalogs/`, discover catalogs and agents from their directories, write
-  `catalogs/README.md` (the contract and a template).
+  `catalogs/README.md` (the contract and a template); `tests/lint.sh` checks the catalogs on
+  their own. — done
 - **Caches in Docker volumes (D7)** — done (checked on the Go and Gradle scratch projects: first
   run downloads into the volumes, the second works with `--net none`, the host's caches stay
   untouched), the one behaviour change of this phase: the `cache` kind
@@ -316,7 +319,8 @@ From the part-1 review; makes part 2 easier to build and to read.
   and "project is gone" like images). Existing `.go-yolo/cache/` directories are left alone, with a
   one-time note that they can be deleted.
 - Split `tests/run.sh` (700 lines) per module; document the test hooks (`GOYOLO_OS_RELEASE`,
-  `GOYOLO_CA_DIR`, `GOYOLO_LOCALES_SUPPORTED`, `GOYOLO_JVM_DIR`) in `tests/README.md`.
+  `GOYOLO_CA_DIR`, `GOYOLO_LOCALES_SUPPORTED`, `GOYOLO_JVM_DIR`) in `tests/README.md`. — done:
+  `tests/lib.sh` plus ten `tests/test-*.sh`, each from fresh fixtures.
 
 Done when: all tests pass (with the cache tests rewritten for volumes) and the plans of the test
 fixtures are identical apart from the cache and seed items; a Go and a Gradle project build with

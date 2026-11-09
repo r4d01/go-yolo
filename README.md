@@ -564,7 +564,9 @@ bash tests/run.sh
 bash tests/lint.sh        # shellcheck over the launcher, entrypoint, catalogs
 ```
 
-It uses stub `go` and `docker` commands from `tests/fixtures/` and never changes your real config.
+It uses stub commands from `tests/fixtures/` and never changes your real config;
+`bash tests/run.sh go java` runs only those test files. `tests/README.md` explains the layout,
+the helpers, the stubs and the launcher's test hooks.
 The tmux selection checks need `script(1)` (util-linux) and are skipped without it.
 
 After building an image, check privilege dropping, executable shadows and the allowlist firewall:
