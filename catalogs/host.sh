@@ -165,7 +165,9 @@ host_probe() {
         # Installed, built or copied: compare the files, not just the version. A directory by
         # its files' names, sizes and link targets (contents would take too long), a file by
         # its contents. (Apt toolchains are checked as packages.)
-        if [[ $method == apt ]]; then continue; fi
+        # (Apt toolchains are checked as packages, directories built in the build stage, like an
+        # SDK, by their catalog's probes.)
+        if [[ $method == apt || ( $method == build && $kind == toolchain ) ]]; then continue; fi
         if [[ -d $name ]]; then
           version="$(find "$name" \( -type f -o -type l \) -printf '%P %s %l\n' 2>/dev/null | LC_ALL=C sort | sha256sum | cut -c1-12)"
           printf '%s %s\tfiles: %s\n' "$kind" "$name" "$version"

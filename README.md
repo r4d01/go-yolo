@@ -377,6 +377,32 @@ An apt JDK that is behind the archive gets the archive's newer version (never a 
 main system properties (`java.home`, encodings, user language and country), `javac`, the JDKs
 found in the usual places, and `mvn -v`/`gradle --version` when they are on `PATH`.
 
+### Android
+
+The setup offers an Android SDK whether or not the host has one; an Android Gradle project
+(`com.android.` in `build.gradle(.kts)`, or `sdk.dir` in `local.properties`) suggests it. The SDK
+goes where Gradle looks for it: `sdk.dir` in `local.properties`, else `ANDROID_HOME`,
+`ANDROID_SDK_ROOT`, else `~/Android/Sdk`, owned by you.
+
+- **An SDK on the host:** its packages (platforms, build-tools, platform-tools, ...) at the host's
+  revisions, read on every run, and the licences the host accepted.
+- **No SDK on the host:** packages from Google's repository manifest (the newest stable platforms
+  and build-tools; the project's `compileSdk` is marked as suggested), never pre-selected. The
+  revision you pick is pinned in the config (`image android component build-tools;36.0.0@36.0.0`)
+  and gets a ⚠ in the plan: nothing proves a build there works on the host. `cmdline-tools` is
+  pinned with them. **Licences:** the setup shows each licence the picked packages need and asks;
+  only a `y` accepts it (saved as `image android license android-sdk-license`). `--yes` never
+  accepts a licence.
+
+The SDK is installed in the image's build stage by `scripts/android-sdk.sh`: cmdline-tools from
+the manifest (checked against its SHA-1), then its Android CLI installs the packages; every
+package's licence is checked before anything is installed, and every revision after. If Google
+no longer serves a pinned revision, the build fails: `go-yolo.sh --setup` takes the current one.
+`~/.android/debug.keystore` is mounted read-only, so debug APKs are signed as on the host. With
+the SDK come `ANDROID_HOME`, `ANDROID_SDK_ROOT`, and `dl.google.com` and `maven.google.com` for
+`--net allowlist`. `--parity` compares each package's revision; packages the host doesn't have
+show as *only in the container*.
+
 ### Checking parity
 
 `go-yolo.sh --parity` (from the project root, like a normal run) runs the same probes on the
@@ -634,6 +660,7 @@ too.
 | `catalogs/host.sh`  | plan items every project gets (base, CAs, time zone, proxies, extras) |
 | `catalogs/go.sh`    | the Go catalog                                                     |
 | `catalogs/java.sh`  | the Java catalog (JDKs, Maven, Gradle)                             |
+| `catalogs/android.sh` | the Android catalog (SDK packages, licences, debug keystore)     |
 | `catalogs/README.md`| the catalog contract and a template for a new one                  |
 
 Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)

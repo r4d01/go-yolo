@@ -1,0 +1,26 @@
+<?xml version="1.0" ?>
+<!-- A small stand-in for dl.google.com/android/repository/repository2-3.xml (GOYOLO_ANDROID_MANIFEST). -->
+<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/03">
+  <license id="android-sdk-license" type="text">Terms and Conditions (test fixture).</license>
+  <license id="android-sdk-preview-license" type="text">Preview terms (test fixture).</license>
+  <channel id="channel-0">stable</channel>
+  <channel id="channel-2">beta</channel>
+  <remotePackage path="cmdline-tools;latest"><revision><major>23</major><minor>0</minor></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>commandlinetools-linux_latest.zip</url></complete><host-os>linux</host-os></archive></archives></remotePackage>
+  <remotePackage path="platform-tools"><revision><major>37</major><minor>0</minor><micro>2</micro></revision><uses-license ref="android-sdk-preview-license"/><channelRef ref="channel-2"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>pt-beta.zip</url></complete><host-os>linux</host-os></archive></archives></remotePackage>
+  <remotePackage path="platform-tools"><revision><major>37</major><minor>0</minor><micro>1</micro></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>pt.zip</url></complete><host-os>linux</host-os></archive></archives></remotePackage>
+  <remotePackage path="platforms;android-37"><revision><major>1</major></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>p37.zip</url></complete></archive></archives></remotePackage>
+  <remotePackage path="platforms;android-36"><revision><major>2</major></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>p36.zip</url></complete></archive></archives></remotePackage>
+  <remotePackage path="platforms;android-36-ext19"><revision><major>1</major></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>p36x.zip</url></complete></archive></archives></remotePackage>
+  <remotePackage path="platforms;android-30"><revision><major>3</major></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>p30.zip</url></complete></archive></archives></remotePackage>
+  <remotePackage path="build-tools;36.0.0"><revision><major>36</major><minor>0</minor><micro>0</micro></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>bt36.zip</url></complete><host-os>linux</host-os></archive></archives></remotePackage>
+  <remotePackage path="ndk;27.0.12077973"><revision><major>27</major><minor>0</minor><micro>12077973</micro></revision><uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+    <archives><archive><complete><size>1</size><checksum type="sha1">00</checksum><url>ndk.zip</url></complete><host-os>linux</host-os></archive></archives></remotePackage>
+</sdk:sdk-repository>

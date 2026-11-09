@@ -17,7 +17,8 @@
 #
 # Sets: RECIPES  "kind<TAB>name" -> what the Dockerfile (lib/image.sh) needs:
 #                  download: url<TAB>algorithm<TAB>checksum url<TAB>file...
-#                  build:    a shell command for the build stage, writing the file to "$OUT"
+#                  build:    a shell command for the build stage: for a file (a tool), it
+#                            writes the file to "$OUT"; for a directory, it installs there
 
 declare -A RECIPES=()
 
@@ -79,6 +80,18 @@ plan_build() {
   RECIPES[$kind$'\t'$file]=$command
 }
 
+# plan_build_dir KIND GROUP DIR VALUE FLAGS COMMAND — install directory DIR (e.g. an SDK) in the
+# build stage with shell COMMAND, run as you with your HOME; it installs at DIR and checks the
+# result itself. Then DIR is copied into the image, owned by you. FLAGS: e.g. not-on-host.
+plan_build_dir() {
+  local kind=$1 group=$2 dir=$3 value=$4 flags=$5 command=$6
+  if is_system_dir "$dir"; then die "refusing to put $dir into the image: it is a system directory, your home directory or one of its parents"; fi
+  if plan_has "$kind" "$dir"; then return 0; fi
+  if [[ $flags == - ]]; then flags=user-owned; else flags="user-owned,$flags"; fi
+  plan_add "$kind" "$group" build "$dir" "$value" "$flags"
+  RECIPES[$kind$'\t'$dir]=$command
+}
+
 # plan_copy_file KIND GROUP FILE REASON — copy one host file (e.g. a tool no recipe can build) into
 # the image at the same path, owned as on the host; REASON is the flag saying why.
 plan_copy_file() {
@@ -87,12 +100,19 @@ plan_copy_file() {
   plan_add "$kind" "$group" copy "$file" "$(sha256sum <"$file" | cut -c1-16)" "$(owner_flags "$file" "$reason")"
 }
 
-# shell_words WORD... — the words for a shell command line, each quoted only if it needs to be
-# (printf %q quotes a "," too, which makes URLs and lists hard to read).
+# shell_words WORD... — the words for a shell command line, each quoted only if it needs to be,
+# in single quotes where it can ('platforms;android-36'): printf %q quotes a "," and a ";" with
+# backslashes, which makes URLs and lists hard to read.
 shell_words() {
   local word out=()
   for word in "$@"; do
-    if [[ -n $word && $word != *[^A-Za-z0-9_=/.:,@%+-]* ]]; then out+=("$word"); else out+=("$(printf '%q' "$word")"); fi
+    if [[ -n $word && $word != *[^A-Za-z0-9_=/.:,@%+-]* ]]; then
+      out+=("$word")
+    elif [[ $word != *"'"* ]]; then
+      out+=("'$word'")
+    else
+      out+=("$(printf '%q' "$word")")
+    fi
   done
   printf '%s' "${out[*]}"
 }

@@ -28,9 +28,15 @@ prepare_parity() {
 
 # Run the probes on both sides, show each result, exit 0 if all match and 1 otherwise.
 run_parity() {
-  local name value host_value container_value differences=0
-  local -A host=() container=()
+  local name value host_value container_value differences=0 line kind group method item flags
+  local -A host=() container=() container_only=()
   local names=()
+
+  # Probes of items the host doesn't have (D23) can only run in the container: "kind name".
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method item value flags <<<"$line"
+    if [[ ,$flags, == *,not-on-host,* ]]; then container_only["$kind $item"]=1; fi
+  done
 
   while IFS=$'\t' read -r name value; do
     host[$name]=$value
@@ -45,7 +51,9 @@ run_parity() {
   for name in "${names[@]}"; do
     host_value=${host[$name]-(no result)}
     container_value=${container[$name]-(no result)}
-    if [[ $host_value == "$container_value" ]]; then
+    if [[ -n ${container_only[$name]:-} ]]; then
+      printf '  %s %-28s %s\n' "$(ui_paint yellow ○)" "$name" "only in the container (not on the host): $container_value" >&2
+    elif [[ $host_value == "$container_value" ]]; then
       printf '  %s %-28s %s\n' "$(ui_paint green ✓)" "$name" "$(ui_paint dim "$host_value")" >&2
     else
       differences=$((differences + 1))

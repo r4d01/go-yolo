@@ -15,7 +15,8 @@ A catalog defines functions prefixed with its name:
 | `<name>_discover` | list what the host has, for the setup picker: one candidate per line, `mode<TAB>kind<TAB>id<TAB>hint<TAB>name<TAB>description` (see below) | yes, unless the catalog only adds fixed items |
 | `<name>_resolve` | add plan items for what the setup picked: check with `picked <name> KIND ID` (or `picked_ids <name> KIND`, `catalog_picked <name>`; `picked_mode` says `image` or `copy`), ask the host's tools, and use the helpers below | yes |
 | `<name>_detect` | a **hint** only: true if the project looks like it uses the ecosystem (files in the project root, the current directory); `_discover` uses it to pre-select candidates on a first setup | no |
-| `<name>_probe` | `--parity` probe: print `name<TAB>value` lines | no |
+| `<name>_setup MODE` | after the picker: complete or ask about the picks in `CONFIG_ITEMS` (e.g. pin a needed package, ask for a licence); `MODE` is `ask` in a terminal, otherwise it must not accept anything | no |
+| `<name>_probe` | `--parity` probe: print `name<TAB>value` lines (`kind name` for plan items: those flagged `not-on-host` show as container-only) | no |
 
 A candidate line:
 
@@ -33,6 +34,9 @@ Rules:
   plan unless it is picked; the hints only pre-select.
 - **Ask the host's tools**, never guess: `go env`, the JDK's `release` file, `dpkg -S`. Read
   versions on every run; don't store them.
+- **Offer what the host doesn't have too** (D23), when the catalog can: never pre-selected
+  (hint `0`), its version pinned in the id (`build-tools;36.0.0@36.0.0`), the `not-on-host` flag
+  in the plan, the description starting with `○`.
 - **A picked item the host no longer has** gets a `gone` item (`plan_add KIND GROUP skip NAME - gone`).
 - **Install, don't copy, where you can** (`plan_download`, `plan_build`), with the vendor's own
   checksum URL (never a checksum typed into the catalog) and a few host files to check the result

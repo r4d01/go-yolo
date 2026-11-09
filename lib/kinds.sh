@@ -20,6 +20,8 @@ toolchain    11    1      {name} ({value})
 tools        12    1      {name} ({value})
 tool         12    1      {name} ({value})
 link         13    1      {name} → {value}
+component    13    1      {name} ({value})
+license      13    1      licence {name}
 package      14    1      {name}={value}
 parity       15    0      {name}={value}
 cert         16    1      {name}
@@ -57,6 +59,8 @@ host-behind            warning    the base image has this newer version, the hos
 host-ahead             warning    the base image has this older version, the host has %v (go-yolo.sh --rebuild updates the base image)
 host-older             warning    the host has %v, an older version: the image gets the archive's version (apt upgrade the host to match)
 not-on-host            warning    not installed on the host: a build that needs it works here but fails on the host
+not-with-host-sdk      warning    picked when the host had no Android SDK; the host has one now: go-yolo.sh --setup
+licence-missing        warning    needs the licence %v, not accepted: go-yolo.sh --setup shows it
 not-in-archive         warning    not installed: the host's version isn't in the %d archive (third-party repository, or apt upgrade the host)
 not-found              warning    no such apt package
 may-hold-secrets       warning    may hold credentials: the agent can read it

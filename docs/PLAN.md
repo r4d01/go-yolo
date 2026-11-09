@@ -506,21 +506,43 @@ JDK 21 is behind the archive, the plan's ⚠).
 Done when: the part-1 Go and Java checks pass with installed (not copied) toolchains, and the
 plan shows which items are copies and why.
 
-### 4.5 Phase D: Android
+### 4.5 Phase D: Android (with D23: no SDK needed on the host)
 
-- Discover: the SDK (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, `sdk.dir` in `local.properties`),
-  `sdkmanager --list_installed`, `~/.android/debug.keystore`.
-- Recipe: cmdline-tools from dl.google.com with its checksum, then `sdkmanager` with the picked
-  components at the host's versions, as the user, at the host's SDK path; licences from the host.
-- Mount `~/.android/debug.keystore` read-only (otherwise debug APKs are signed with a different
-  key and won't install over host builds); release keystores and `keystore.properties` are
-  secrets, never suggested.
-- Env: `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`. Domains: `dl.google.com`,
-  `maven.google.com`.
+Found while prototyping (2026-11-09, cmdline-tools 23.0):
+
+- `sdkmanager` is deprecated: it only wraps the new **Android CLI** (`cmdline-tools/latest/bin/
+  android`, with its own Java, so no JDK is needed to install the SDK). `android --no-metrics
+  --sdk=SDK sdk install PATH@REVISION...` installs packages at a revision, but only revisions the
+  repository manifest (`dl.google.com/android/repository/repository2-3.xml`) still lists; for any
+  other it prints "No url … Ignoring." and exits 0.
+- The CLI **accepts licences without asking** (it writes `SDK/licenses/` itself).
+- The manifest has each package's revision, licence, URL and SHA-1.
+
+Design:
+
+- **Items:** kind `component`, one per SDK package (`platforms;android-36`, `build-tools;36.0.0`,
+  `platform-tools`, `cmdline-tools;latest`). On the host (★): the host SDK's packages
+  (`package.xml` files), at the host's revision, read on every run. Not on the host (○): picked from
+  the manifest (newest stable platforms and build-tools, the project's `compileSdk` marked
+  suggested), pinned in the id: `image android component build-tools;36.0.0@36.0.0`. With a
+  host SDK only its packages are offered (one SDK, D23).
+- **SDK path:** `sdk.dir` in `local.properties`, else `ANDROID_HOME`, `ANDROID_SDK_ROOT`, else
+  `~/Android/Sdk`; owned by you.
+- **Licences:** checked *before* installing, against the manifest: a package's licence must be
+  one the host accepted (its `SDK/licenses/` files) or one you accepted in `--setup` (shown in
+  full, `[y/N]`, saved as `image android license android-sdk-license`). `--yes` never accepts.
+- **Recipe:** `scripts/android-sdk.sh` in the build stage: cmdline-tools from the manifest (SHA-1),
+  then the Android CLI, then every revision checked (a newer one at Google fails the build: run
+  `--setup`). Only the SDK directory is copied into the image.
+- **Mount** `~/.android/debug.keystore` read-only (debug APKs signed as on the host); release
+  keystores and `keystore.properties` are secrets, never suggested.
+- **Env:** `ANDROID_HOME`, `ANDROID_SDK_ROOT`. **Domains:** `dl.google.com`, `maven.google.com`.
 - Devices (adb over USB, the emulator): D21, TBD.
 
-Done when: `./gradlew assembleDebug test` behaves the same on host and container, and the debug
-APK built in the container installs over one built on the host.
+Done when: a new Android project builds with `./gradlew assembleDebug test` in the container with
+an SDK the host doesn't have, a second run works with `--net none`, and the debug APK is signed
+with the host's debug key. (Installing over a host-built APK needs a host SDK: checked once one
+exists.)
 
 ### 4.6 Phase E: Arduino
 

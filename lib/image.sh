@@ -92,7 +92,7 @@ json_string() {
 }
 
 # Print Dockerfile lines that create PATH's missing parent directories under $HOME, owned by
-# you and with the host's modes, so a directory copied there is reachable as on the host.
+# you and with the host's modes (755 where the host has none), so a directory copied there is reachable as on the host.
 # CREATED (an associative array name) remembers the ones already made.
 user_parents() {
   local path=$1 dir
@@ -107,7 +107,8 @@ user_parents() {
   for dir in "${parents[@]}"; do
     [[ -z ${made[$dir]:-} ]] || continue
     made[$dir]=1
-    printf 'RUN install -d -o %s -g %s -m %s %q\n' "$HOST_UID" "$HOST_GID" "$(stat -c %a -- "$dir")" "$dir"
+    # The host's mode; 755 for a directory the host doesn't have (an SDK it doesn't have).
+    printf 'RUN install -d -o %s -g %s -m %s %q\n' "$HOST_UID" "$HOST_GID" "$(stat -c %a -- "$dir" 2>/dev/null || printf 755)" "$dir"
   done
 }
 
@@ -180,12 +181,16 @@ project_dockerfile() {
   fi
   if ((${#builds[@]})); then dockerfile_build_stage "${builds[@]}"; fi
   if ((${#builds[@]} + ${#files[@]})); then
-    printf '\n# single files at the host'"'"'s paths: built above, or copied from the host\n'
+    printf '\n# built above, or single files copied from the host, at the host'"'"'s paths\n'
     number=0
     for line in "${builds[@]}"; do
       IFS=$'\t' read -r kind group method name value flags <<<"$line"
       number=$((number + 1))
-      dockerfile_copy_file "$flags" "/tmp/go-yolo-build/$number/${name##*/}" "$name" created --from=build
+      if [[ $kind == tool ]]; then
+        dockerfile_copy_file "$flags" "/tmp/go-yolo-build/$number/${name##*/}" "$name" created --from=build
+      else
+        dockerfile_copy_file "$flags" "$name/" "$name/" created --from=build
+      fi
     done
     number=0
     for line in "${files[@]}"; do
@@ -236,16 +241,25 @@ download_empty_files() {
 # dockerfile_build_stage LINE... — the build stage: each item's recipe command run as you, with
 # your HOME, writing its file into /tmp/go-yolo-build/N, which is then checked against the host's.
 dockerfile_build_stage() {
-  local line kind group method name value flags number=0
+  local line kind group method name value flags number=0 dirs=()
+  for line in "$@"; do
+    IFS=$'\t' read -r kind group method name value flags <<<"$line"
+    if [[ $kind != tool ]]; then dirs+=("$name"); fi
+  done
   printf '\n# a build stage: tools built at the host'"'"'s paths (they end up in the binaries) and\n'
-  printf '# checked against the host'"'"'s; only the files go into the image, not what was downloaded\n'
+  printf '# checked against the host'"'"'s, directories (an SDK) installed and checked; only those go into\n'
+  printf '# the image, not what was downloaded for them\n'
   printf 'FROM project AS build\n'
-  printf 'RUN install -d -o %s -g %s %q /tmp/go-yolo-build\n' "$HOST_UID" "$HOST_GID" "$HOME_DIR"
+  printf 'RUN install -d -o %s -g %s %s\n' "$HOST_UID" "$HOST_GID" "$(shell_words "$HOME_DIR" /tmp/go-yolo-build "${dirs[@]}")"
   printf 'USER %s:%s\n' "$HOST_UID" "$HOST_GID"
   printf 'ENV HOME=%s\n' "$(json_string "$HOME_DIR")"
   for line in "$@"; do
     IFS=$'\t' read -r kind group method name value flags <<<"$line"
     number=$((number + 1))
+    if [[ $kind != tool ]]; then
+      printf 'RUN %s\n' "$(recipe "$kind" "$name")"
+      continue
+    fi
     printf 'RUN OUT=/tmp/go-yolo-build/%s && mkdir -p "$OUT" \\\n && %s \\\n' "$number" "$(recipe "$kind" "$name")"
     printf ' && /opt/go-yolo/scripts/verify.sh "$OUT" %s\n' "$(shell_words "${value##*, }" "${name##*/}")"
   done

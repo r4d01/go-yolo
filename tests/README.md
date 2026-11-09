@@ -17,7 +17,7 @@ bash tests/docker.sh IMAGE      # container checks against a built base image
 | `test-project.sh` | the git repository root, `.go-yolo/` |
 | `test-plan.sh` | the plan: packages, certificates, env, diff, confirmation, the base comparison, the prompt |
 | `test-locales.sh` | locales and the umask |
-| `test-go.sh`, `test-java.sh` | the Go and Java catalogs (and `extra tool`) |
+| `test-go.sh`, `test-java.sh`, `test-android.sh` | the Go, Java and Android catalogs (and `extra tool`) |
 | `test-prune.sh`, `test-parity.sh` | `--prune`, `--parity` |
 | `test-images.sh` | image builds: `--rebuild`, the build cache, reuse |
 | `docker.sh` | real containers: privilege drop, executable shadows, firewall, umask, locales, cache volume ownership |
@@ -63,3 +63,4 @@ for tests only, not documented for users:
 | `GOYOLO_CA_DIR` | `/usr/local/share/ca-certificates` |
 | `GOYOLO_LOCALES_SUPPORTED` | `/usr/share/i18n/SUPPORTED` |
 | `GOYOLO_JVM_DIR` | `/usr/lib/jvm` |
+| `GOYOLO_ANDROID_MANIFEST` | Google's Android repository manifest (`fixtures/android-repository.xml`) |

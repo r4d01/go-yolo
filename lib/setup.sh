@@ -129,6 +129,10 @@ run_setup() {
     items+=("$mode"$'\t'"$catalog"$'\t'"$kind"$'\t'"$id")
   done
   CONFIG_ITEMS=("${items[@]}")
+  # A catalog may complete the picks or ask about them (e.g. Android licences): <catalog>_setup.
+  for catalog in "${CATALOGS[@]}"; do
+    if declare -F "${catalog}_setup" >/dev/null; then "${catalog}_setup" "${1:-}"; fi
+  done
 }
 
 # Make sure the project has a setup: run the picker for --setup, or when there is no config yet
