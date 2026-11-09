@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# The helpers catalogs (packs/*.sh) use to add items to the plan. Each checks
+# The helpers catalogs (catalogs/*.sh) use to add items to the plan. Each checks
 # .go-yolo/config's exclude lines, the safety rules, and what the plan already has.
 # (Apt packages: plan_packages in lib/apt.sh.)
 

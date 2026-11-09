@@ -2,14 +2,24 @@
 # go-yolo: run AI coding agents in a Docker container.
 #
 # This file only lists the steps of a run; each step lives in lib/<module>.sh, and the items
-# of the project image come from the packs in packs/<pack>.sh.
+# of the project image come from the catalogs in catalogs/<catalog>.sh.
 # shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(dirname "$SELF")"
-AGENTS=(claude codex vibe opencode shell)
-PACKS=(host go java)
+
+# The agents (agents/<name>.conf, plus the built-in shell) and the catalogs (catalogs/<name>.sh,
+# the host catalog first) are whatever files are there: adding one means adding a file.
+AGENTS=()
+for file in "$REPO_DIR"/agents/*.conf; do AGENTS+=("$(basename -- "$file" .conf)"); done
+AGENTS+=(shell)
+CATALOGS=(host)
+for file in "$REPO_DIR"/catalogs/*.sh; do
+  name="$(basename -- "$file" .sh)"
+  if [[ $name != host ]]; then CATALOGS+=("$name"); fi
+done
+unset file name
 
 # shellcheck source=lib/ui.sh
 source "$REPO_DIR/lib/ui.sh"
@@ -45,12 +55,11 @@ source "$REPO_DIR/lib/run.sh"
 source "$REPO_DIR/lib/prune.sh"
 # shellcheck source=lib/parity.sh
 source "$REPO_DIR/lib/parity.sh"
-# shellcheck source=packs/host.sh
-source "$REPO_DIR/packs/host.sh"
-# shellcheck source=packs/go.sh
-source "$REPO_DIR/packs/go.sh"
-# shellcheck source=packs/java.sh
-source "$REPO_DIR/packs/java.sh"
+for catalog in "${CATALOGS[@]}"; do
+  # shellcheck source=/dev/null # the catalogs are checked on their own by tests/lint.sh
+  source "$REPO_DIR/catalogs/$catalog.sh"
+done
+unset catalog
 
 ui_set_color auto
 parse_args "$@"            # exits for --help, --prune and the alias commands

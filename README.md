@@ -316,7 +316,7 @@ go-yolo: warning: 1 of 7 probes differ
 The probes cover the user, home, working directory, umask, architecture, glibc, locale, time
 zone, the base tools (gcc, make, git, python3), and every env variable, package and CA
 certificate in the plan (secret values only as a hash). The exit status is 1 if anything
-differs. Each pack can add probes (`<pack>_probe` in `packs/<pack>.sh`); both sides run the same
+differs. Each catalog can add probes (`<catalog>_probe` in `catalogs/<catalog>.sh`); both sides run the same
 code, copied into the container.
 
 ### tmux
@@ -475,7 +475,8 @@ Permanently: add it to `AGENT_DOMAINS` in `agents/<agent>.conf`, or for every ag
    created on the host.
 2. Add a system-wide install line to the `Dockerfile` (`npm install -g …`, `uv tool install …`, or
    a binary in `/usr/local/bin`). Never install into a home directory.
-3. Add the name to `AGENTS` in `go-yolo.sh` and to the agent check in `entrypoint.sh`.
+   That's all: go-yolo finds the agents in `agents/*.conf` (and catalogs in `catalogs/*.sh`, see
+   `catalogs/README.md`).
 
 ## Updating agents
 
@@ -545,10 +546,11 @@ too.
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
 | `lib/prune.sh`      | `--prune`: image status, removal                                   |
-| `lib/parity.sh`     | `--parity`: runs the packs' probes on both sides and compares them |
-| `packs/host.sh`     | plan items every project gets (base, CAs, time zone, proxies, extras) |
-| `packs/go.sh`       | the Go pack                                                        |
-| `packs/java.sh`     | the Java pack (JDKs, Maven, Gradle)                                |
+| `lib/parity.sh`     | `--parity`: runs the catalogs' probes on both sides and compares them |
+| `catalogs/host.sh`  | plan items every project gets (base, CAs, time zone, proxies, extras) |
+| `catalogs/go.sh`    | the Go catalog                                                     |
+| `catalogs/java.sh`  | the Java catalog (JDKs, Maven, Gradle)                             |
+| `catalogs/README.md`| the catalog contract and a template for a new one                  |
 
 Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)
 is part of the image. `docs/PLAN.md` describes where this is heading.
@@ -559,6 +561,7 @@ Run launcher regressions without Docker or host toolchains:
 
 ```bash
 bash tests/run.sh
+bash tests/lint.sh        # shellcheck over the launcher, entrypoint, catalogs
 ```
 
 It uses stub `go` and `docker` commands from `tests/fixtures/` and never changes your real config.

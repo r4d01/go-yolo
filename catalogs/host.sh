@@ -1,12 +1,12 @@
 # shellcheck shell=bash
-# The host pack: what every project gets, whatever its languages.
+# The host catalog: what every project gets, whatever its languages.
 #
 #   base      the shared go-yolo base image (OS, agents, entrypoint)
 #   parity    base image packages whose version differs from the host's, as warnings: the
 #             base image installs the archive's current versions, and it never downgrades
 #   packages  the `extra package` items from .go-yolo/config, at the host's versions
 #   extras    `extra tool NAME` (a host command's install) and `extra mount PATH` (read-only)
-#             (language packs add the packages a project's native code needs)
+#             (language catalogs add the packages a project's native code needs)
 #   certs     extra CA certificates trusted by the host (/usr/local/share/ca-certificates)
 #   locales   the locales of LANG, LC_ALL and LC_* (with the locales package to generate them)
 #   env       the host's time zone and proxy settings; plus `extra env` items

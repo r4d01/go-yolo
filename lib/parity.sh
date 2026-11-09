@@ -1,18 +1,18 @@
 # shellcheck shell=bash
 # --parity: run the same probes on the host and in the container, and show the differences.
 #
-# A probe is a function <pack>_probe (in packs/<pack>.sh) that prints "name<TAB>value" lines.
+# A probe is a function <catalog>_probe (in catalogs/<catalog>.sh) that prints "name<TAB>value" lines.
 # The probes and the plan are copied into the container as text (declare -f / declare -p), so
 # both sides run exactly the same code. --parity exits with 1 if anything differs.
 
-# The probe script: the plan, the probes of the packs this project uses, and a call to each.
+# The probe script: the plan, the probes of the catalogs this project uses, and a call to each.
 parity_script() {
-  local pack
+  local catalog
   declare -p PLAN
-  for pack in "${PACKS[@]}"; do
-    if declare -F "${pack}_probe" >/dev/null && "${pack}_detect"; then
-      declare -f "${pack}_probe"
-      printf '%s_probe\n' "$pack"
+  for catalog in "${CATALOGS[@]}"; do
+    if declare -F "${catalog}_probe" >/dev/null && "${catalog}_detect"; then
+      declare -f "${catalog}_probe"
+      printf '%s_probe\n' "$catalog"
     fi
   done
 }

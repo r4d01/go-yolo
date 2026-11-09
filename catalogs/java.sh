@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# The Java pack, for Maven and Gradle projects: the host's JDKs, build tools and settings.
+# The Java catalog, for Maven and Gradle projects: the host's JDKs, build tools and settings.
 #
 #   toolchain  every JDK the host's Gradle or Maven could pick as a toolchain: apt packages for
 #              apt-installed ones, copies (owned as on the host) for the rest; the default `java`
@@ -141,6 +141,7 @@ java_plan_maven() {
   done
   # The local repository: settings.xml's <localRepository>, else ~/.m2/repository.
   repo="$(sed -n 's:.*<localRepository>\(.*\)</localRepository>.*:\1:p' "$m2/settings.xml" 2>/dev/null | head -n 1)"
+  # shellcheck disable=SC2016 # Maven's literal ${user.home} placeholder, not a shell expansion
   repo=${repo//'${user.home}'/$HOME_DIR}
   repo=${repo:-$m2/repository}
   plan_cache java "$repo" m2-repository

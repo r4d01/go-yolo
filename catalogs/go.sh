@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# The Go pack, for projects with a go.mod or go.work: the host's Go, as the host has it.
+# The Go catalog, for projects with a go.mod or go.work: the host's Go, as the host has it.
 #
 #   toolchain  GOROOT, copied into the image at the same path (or its apt packages)
 #   tools      GOBIN, or the first GOPATH entry's bin/: your `go install`ed tools, owned by you

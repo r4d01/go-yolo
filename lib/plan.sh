@@ -29,7 +29,7 @@
 #   flags   comma-separated, declared in lib/kinds.sh: behaviour flags change what go-yolo does,
 #           the rest only explain ("-" when there are none)
 #
-# The catalogs (packs/*.sh) fill the plan through the helpers in lib/items.sh and lib/apt.sh;
+# The catalogs (catalogs/*.sh) fill the plan through the helpers in lib/items.sh and lib/apt.sh;
 # lib/confirm.sh shows and confirms it.
 #
 # Sets: PLAN            the resolved plan lines, sorted
@@ -92,11 +92,11 @@ plan_value() {
 
 # Load .go-yolo/config and let every catalog add its items.
 resolve_plan() {
-  local pack
+  local catalog
   load_config
   PLAN=()
-  for pack in "${PACKS[@]}"; do
-    if "${pack}_detect"; then "${pack}_resolve"; fi
+  for catalog in "${CATALOGS[@]}"; do
+    if "${catalog}_detect"; then "${catalog}_resolve"; fi
   done
   plan_finish
 }

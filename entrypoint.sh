@@ -24,10 +24,9 @@ done
 ((GOYOLO_UID != 0 && GOYOLO_GID != 0)) || die "refusing to run the agent as root (UID/GID 0)"
 [[ $GOYOLO_USER =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || die "invalid GOYOLO_USER '$GOYOLO_USER'"
 [[ $GOYOLO_HOME == /?* && $GOYOLO_HOME != *$'\n'* ]] || die "invalid GOYOLO_HOME '$GOYOLO_HOME'"
-case $GOYOLO_AGENT in
-  claude|codex|vibe|opencode|shell) ;;
-  *) die "unknown agent '$GOYOLO_AGENT'" ;;
-esac
+# An agent is agents/<name>.conf (or the built-in shell).
+[[ $GOYOLO_AGENT =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid agent name '$GOYOLO_AGENT'"
+[[ $GOYOLO_AGENT == shell || -f $GOYOLO_DIR/agents/$GOYOLO_AGENT.conf ]] || die "unknown agent '$GOYOLO_AGENT'"
 case $GOYOLO_NET in
   open|allowlist|none) ;;
   *) die "invalid GOYOLO_NET '$GOYOLO_NET'" ;;
