@@ -6,11 +6,13 @@
 # Sets: MOUNTS       docker run --mount arguments
 #       MOUNTED      path -> rw|ro, for every mounted path
 #       MOUNT_ORDER  mounted paths in the order they were added (for the banner)
+#       VOLUME_TARGETS  the paths of the cache volume mounts
 #       WORKDIR      the project directory ($PWD)
 
 MOUNTS=()
 declare -A MOUNTED=()
 MOUNT_ORDER=()
+VOLUME_TARGETS=()   # paths where cache volumes are mounted (the entrypoint hands them to the user)
 WORKDIR=""
 
 # is_under PATH DIR — true if PATH is DIR or inside it.
@@ -51,6 +53,18 @@ validate_mount_path() {
   if is_system_dir "$normalized" || is_system_dir "$real"; then
     die "refusing to mount $path: it is a system directory, your home directory or one of its parents"
   fi
+}
+
+# add_volume_mount PATH VOLUME — mount Docker volume VOLUME at PATH, read-write.
+add_volume_mount() {
+  local path=$1 volume=$2
+  validate_mount_path "$path"
+  path="$(realpath -ms -- "$path")"
+  [[ -z ${MOUNTED[$path]:-} ]] || return 0
+  MOUNTED[$path]=rw
+  MOUNT_ORDER+=("$path")
+  VOLUME_TARGETS+=("$path")
+  MOUNTS+=(--mount "type=volume,$(csv_field "source=$volume"),$(csv_field "target=$path")")
 }
 
 # Quote one field of a --mount value (docker parses it as CSV).

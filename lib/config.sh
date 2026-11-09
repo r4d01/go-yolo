@@ -16,7 +16,7 @@
 #
 # Sets: CONFIG_ITEMS  one "verb kind name" string per config line
 
-CONFIG_KINDS="package cert locale env toolchain tools tool mount cache seed"
+CONFIG_KINDS="package cert locale env toolchain tools tool mount cache"
 CONFIG_ITEMS=()
 
 config_file() { printf '%s/.go-yolo/config' "$PROJECT_DIR"; }

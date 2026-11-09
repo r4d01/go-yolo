@@ -306,7 +306,9 @@ From the part-1 review; makes part 2 easier to build and to read.
   the repeated `IFS=$'\t' read -r …`.
 - Rename `packs/` to `catalogs/`, discover catalogs and agents from their directories, write
   `catalogs/README.md` (the contract and a template).
-- **Caches in Docker volumes (D7)**, the one behaviour change of this phase: the `cache` kind
+- **Caches in Docker volumes (D7)** — done (checked on the Go and Gradle scratch projects: first
+  run downloads into the volumes, the second works with `--net none`, the host's caches stay
+  untouched), the one behaviour change of this phase: the `cache` kind
   becomes a named volume at the host's path (labels `go-yolo.project`, `go-yolo.cache`); the
   entrypoint chowns a new, root-owned volume before the privilege drop; the `seed` kind,
   `from-host`, the `GOPROXY`/`GRADLE_RO_DEP_CACHE`/`maven.repo.local.tail` wiring and the

@@ -12,6 +12,25 @@ if [[ $1 == build ]]; then
     if [[ ${args[i]} == -t ]]; then printf '%s\n' "${args[i + 1]}" >>"$DOCKER_TEST_LOG.built"; fi
   done
 fi
+# Cache volumes for --prune: $DOCKER_TEST_VOLUMES holds name, project, cache, created, size.
+if [[ $* == volume\ ls\ * ]]; then
+  if [[ -n ${DOCKER_TEST_VOLUMES:-} && -f $DOCKER_TEST_VOLUMES ]]; then cut -f1 "$DOCKER_TEST_VOLUMES"; fi
+  exit 0
+fi
+if [[ $* == volume\ inspect\ --format\ * ]]; then
+  for name in "${@:4}"; do
+    awk -F'\t' -v name="$name" '$1 == name { print $2 "\t" $3 "\t" $4 }' "$DOCKER_TEST_VOLUMES"
+  done
+  exit 0
+fi
+if [[ $* == system\ df\ -v ]]; then
+  printf 'Local Volumes space usage:\n\nVOLUME NAME   LINKS   SIZE\n'
+  if [[ -n ${DOCKER_TEST_VOLUMES:-} && -f $DOCKER_TEST_VOLUMES ]]; then
+    awk -F'\t' '{ print $1 "   0   " $5 }' "$DOCKER_TEST_VOLUMES"
+  fi
+  printf '\nBuild cache usage: 0B\n'
+  exit 0
+fi
 # The image list for --prune: $DOCKER_TEST_IMAGES holds tag, id, age, size, project, plan.
 if [[ $* == image\ ls\ * ]]; then
   if [[ -n ${DOCKER_TEST_IMAGES:-} ]]; then cut -f1-4 "$DOCKER_TEST_IMAGES"; fi

@@ -3,6 +3,8 @@ set -euo pipefail
 [[ $(/usr/bin/id -u) == "$GOYOLO_UID" && $(/usr/bin/id -g) == "$GOYOLO_GID" ]]
 [[ $PATH == /home/goyolo-test/tools/bin:/home/goyolo-test/toolchain/bin:/home/goyolo-test/go/bin:* ]]
 [[ ! -e /home/goyolo-test/root-shadow ]]
+# A new (root-owned) cache volume is handed to the user.
+[[ $(/usr/bin/stat -c %u /srv/cache) == "$GOYOLO_UID" ]]
 # The host's umask is applied; a locale the image lacks is dropped, an existing one kept.
 [[ $(umask) == 0007 ]]
 [[ -z ${LC_TIME+set} && $LANG == C.UTF-8 ]]

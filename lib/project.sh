@@ -1,15 +1,18 @@
 # shellcheck shell=bash
 # The project: the git repository root, and its .go-yolo/ state directory.
 #
-# .go-yolo/ holds go-yolo's per-project state (config, confirmed plan, build files, caches).
+# .go-yolo/ holds go-yolo's per-project state (config, confirmed plan, build files); the caches
+# are Docker volumes (see cache_volume).
 # It ignores itself in git and is hidden from the container, so the agent can't change it and
 # a repository can't ship one.
 #
 # Sets: PROJECT_DIR  the repository root (the physical path of $PWD)
 #       STATE_DIR    $WORKDIR/.go-yolo, as the container sees it
+#       PROJECT_SLUG <name>-<path hash>: names the project's image and cache volumes
 
 PROJECT_DIR=""
 STATE_DIR=""
+PROJECT_SLUG=""
 
 # Die unless go-yolo runs from the root of a git repository.
 check_project() {
@@ -24,7 +27,19 @@ check_project() {
     die "run go-yolo from the repository's root directory: cd $top"
   fi
   STATE_DIR="$WORKDIR/.go-yolo"
+  PROJECT_SLUG="$(project_slug "$PROJECT_DIR")"
 }
+
+# project_slug DIR — "<name>-<path hash>" for project DIR, e.g. myapp-d0c6fbb2. Docker image and
+# volume names allow [a-z0-9_.-] here; the hash keeps two projects called "app" apart.
+project_slug() {
+  local name
+  name="$(basename -- "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_.\n-' '_' | cut -c1-40)"
+  printf '%s-%s' "$name" "$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+}
+
+# cache_volume NAME — the Docker volume that holds this project's cache NAME.
+cache_volume() { printf 'go-yolo-%s-%s' "$PROJECT_SLUG" "$1"; }
 
 # Die if an existing .go-yolo can't be trusted: not a plain directory of ours, or tracked by git.
 check_state_dir() {
@@ -53,17 +68,13 @@ ensure_state_dir() {
     note "created $dir (ignored by git; hidden from the container)"
   fi
   if [[ ! -e $dir/.gitignore ]]; then printf '*\n' >"$dir/.gitignore"; fi
-  warn_dockerignore
+  note_old_cache_dir
 }
 
-# Warn once if the project builds Docker images without excluding .go-yolo/ from the build
-# context: the caches would be sent to every `docker build`.
-warn_dockerignore() {
-  local marker="$PROJECT_DIR/.go-yolo/warned-dockerignore"
-  [[ -f $PROJECT_DIR/Dockerfile && ! -e $marker ]] || return 0
-  if [[ -f $PROJECT_DIR/.dockerignore ]] && grep -qE '^/?\.go-yolo/?(\*\*)?$' "$PROJECT_DIR/.dockerignore"; then
-    return 0
-  fi
-  warn "this project has a Dockerfile; add .go-yolo/ to its .dockerignore, or its caches end up in the build context (shown once)"
-  : >"$marker"
+# Caches used to live in .go-yolo/cache/; now they are Docker volumes. Say so once.
+note_old_cache_dir() {
+  local dir="$PROJECT_DIR/.go-yolo"
+  [[ -d $dir/cache && ! -e $dir/noted-old-cache ]] || return 0
+  note "$dir/cache is no longer used (caches are Docker volumes now); remove it with: chmod -R u+w $dir/cache && rm -rf $dir/cache (shown once)"
+  : >"$dir/noted-old-cache"
 }

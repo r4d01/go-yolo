@@ -124,6 +124,16 @@ for root in "$GOYOLO_HOME" /tmp /var/tmp; do
   done
 done
 
+# The project's cache volumes: a new volume is owned by root; hand it to the user. Only its top
+# directory, and only paths that really are mount points.
+while IFS= read -r volume_dir; do
+  [[ -n $volume_dir ]] || continue
+  [[ -n ${IS_MOUNT[$volume_dir]:-} && -d $volume_dir && ! -L $volume_dir ]] \
+    || die "GOYOLO_VOLUMES: $volume_dir is not a mounted directory"
+  if [[ $(stat -c %u "$volume_dir") == 0 ]]; then chown "$GOYOLO_UID:$GOYOLO_GID" "$volume_dir"; fi
+done <<<"${GOYOLO_VOLUMES:-}"
+unset GOYOLO_VOLUMES
+
 # ---------------------------------------------------------------------------
 # 3. Environment for the user
 # ---------------------------------------------------------------------------

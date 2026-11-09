@@ -12,28 +12,36 @@ NET_ARGS=()
 TTY_ARGS=()
 CMD=()
 
-# Mount the plan's mount, cache and seed items. A missing project cache is created; a from-host
-# one starts as a copy of the host's (cp --reflink makes that cheap where the filesystem can).
+# Mount the plan's mount items (read-only, at the same path) and cache items (the project's
+# Docker volumes, at the host's cache paths).
 add_plan_mounts() {
-  local line kind group method name value flags cache
+  local line kind group method name value flags
   for line in "${PLAN[@]}"; do
     IFS=$'\t' read -r kind group method name value flags <<<"$line"
     [[ $method != skip ]] || continue
     case $kind in
       mount) add_mount "$name" ro ;;
-      cache)
-        cache="$PROJECT_DIR/.go-yolo/cache/$value"
-        if ((!DRY_RUN)) && [[ ! -d $cache ]]; then
-          mkdir -p -- "$cache"
-          if [[ $flags == from-host ]]; then
-            note "copying $name ($(du -sh -- "$name" | cut -f1)) into .go-yolo/cache/$value, once"
-            cp -a --reflink=auto -- "$name/." "$cache/"
-          fi
-        fi
-        add_mount "$name" rw "$cache"
-        ;;
-      seed) add_mount "$(seed_path "$value")" ro "$name" ;;
+      cache) add_volume_mount "$name" "$(cache_volume "$value")" ;;
     esac
+  done
+}
+
+# Create the project's cache volumes that don't exist yet, labelled so --prune can tell whose
+# they are (docker volume create keeps an existing volume as it is).
+ensure_cache_volumes() {
+  local name
+  while IFS= read -r name; do
+    docker volume create --label "go-yolo.project=$PROJECT_DIR" --label "go-yolo.cache=$name" \
+      "$(cache_volume "$name")" >/dev/null
+  done < <(plan_cache_names)
+}
+
+# The names of the plan's caches (go-mod, gradle-caches, ...), one per line.
+plan_cache_names() {
+  local line kind group method name value rest
+  for line in "${PLAN[@]}"; do
+    IFS=$'\t' read -r kind group method name value rest <<<"$line"
+    if [[ $kind == cache && $method == volume ]]; then printf '%s\n' "$value"; fi
   done
 }
 
@@ -130,6 +138,10 @@ build_docker_command() {
     -e "GOYOLO_EXTRA_DOMAINS=$(allowed_domains)"
     -e "GOYOLO_UMASK=$(umask)"
   )
+  # The cache volume mount points, one per line: the entrypoint gives new ones to the user.
+  if ((${#VOLUME_TARGETS[@]})); then
+    CMD+=(-e "GOYOLO_VOLUMES=$(printf '%s\n' "${VOLUME_TARGETS[@]}")")
+  fi
   # Nested tmux: the container's tmux switches its prefix to C-a.
   if [[ -n ${TMUX:-} ]]; then CMD+=(-e GOYOLO_HOST_TMUX=1); fi
   # LANGUAGE is gettext's list of message languages (e.g. en_US:en), not a locale name.

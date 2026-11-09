@@ -34,7 +34,7 @@ launch() (
     TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$TEST_DIR/apt-policy" \
     DPKG_HOST_FIXTURE="${TEST_DPKG_HOST-}" DPKG_BASE_FIXTURE="$REPO_DIR/tests/fixtures/dpkg-base" \
     DPKG_S_FIXTURE="$TEST_DIR/dpkg-S" PC_PATH_FIXTURE="$TEST_DIR/pc" \
-    DOCKER_TEST_IMAGES="$TEST_DIR/images" GOYOLO_LOCALES_SUPPORTED="$REPO_DIR/tests/fixtures/locales-supported" \
+    DOCKER_TEST_IMAGES="$TEST_DIR/images" DOCKER_TEST_VOLUMES="$TEST_DIR/volumes" GOYOLO_LOCALES_SUPPORTED="$REPO_DIR/tests/fixtures/locales-supported" \
     "${TEST_ENV[@]}" "$REPO_DIR/go-yolo.sh" "$@"
 )
 TEST_ENV=()   # extra VAR=value settings for launch
@@ -52,6 +52,12 @@ dry_run() {
     eval "arg=$line"
     ARGS+=("$arg")
   done <<<"$output"
+}
+# has_arg VALUE — true if the last dry run's docker command has VALUE as one argument.
+has_arg() {
+  local arg
+  for arg in "${ARGS[@]}"; do [[ $arg != "$1" ]] || return 0; done
+  return 1
 }
 assert_mount() {
   local source=$1 target=$2 mode=$3 expected arg
@@ -230,14 +236,12 @@ git -C "$TEST_HOME/project" add -f .go-yolo/.gitignore
 git -C "$TEST_HOME/project" rm -q --cached .go-yolo/.gitignore
 pass 'a symlinked or git-tracked .go-yolo is refused'
 
-: >"$TEST_HOME/project/Dockerfile"
-[[ $(launch_in "$TEST_HOME/project" --yes shell) == *'add .go-yolo/ to its .dockerignore'* ]] || fail 'no .dockerignore warning'
-[[ $(launch_in "$TEST_HOME/project" --yes shell) != *'.dockerignore'* ]] || fail '.dockerignore warning repeated'
-rm -f "$STATE/warned-dockerignore"
-printf '.go-yolo/\n' >"$TEST_HOME/project/.dockerignore"
-[[ $(launch_in "$TEST_HOME/project" --yes shell) != *'.dockerignore'* ]] || fail 'warned despite .dockerignore'
-rm -f "$TEST_HOME/project/Dockerfile" "$TEST_HOME/project/.dockerignore"
-pass 'a Dockerfile without .go-yolo/ in .dockerignore gets a one-time warning'
+mkdir -p "$STATE/cache/go-mod"
+[[ $(launch_in "$TEST_HOME/project" --yes shell) == *'cache is no longer used (caches are Docker volumes now)'* ]] \
+  || fail 'no note about the old .go-yolo/cache/'
+[[ $(launch_in "$TEST_HOME/project" --yes shell) != *'no longer used'* ]] || fail 'the old-cache note was repeated'
+rm -rf -- "$STATE/cache" "$STATE/noted-old-cache"
+pass 'an old .go-yolo/cache/ gets a one-time note that caches are Docker volumes now'
 
 # --- The plan ---------------------------------------------------------------
 
@@ -405,18 +409,21 @@ pass 'Go caches and toolchains at system or home directories (or aliases) are re
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
 expect_plan "toolchain $TEST_HOME/toolchain (go1.99.0) [go]  owned by you, as on the host"
 expect_plan "tools     $TEST_HOME/go/bin (1 files, "
-expect_plan "cache     $TEST_HOME/go/pkg/mod ← .go-yolo/cache/go-mod [go]"
-expect_plan "cache     $TEST_HOME/cache ← .go-yolo/cache/go-build [go]"
-expect_plan "seed      $TEST_HOME/go/pkg/mod/cache/download (read-only, as /var/cache/go-yolo/seed/go-mod) [go]"
-expect_plan 'env       GOPROXY=file:///var/cache/go-yolo/seed/go-mod,https://proxy.example.com,direct [go]  set by go-yolo'
+expect_plan "cache     $TEST_HOME/go/pkg/mod (project volume go-mod) [go]"
+expect_plan "cache     $TEST_HOME/cache (project volume go-build) [go]"
+expect_plan 'env       GOPROXY=https://proxy.example.com,direct [go]'
+[[ $plan_text != *seed* ]] || fail 'the plan still has a seed'
 expect_plan 'domain    proxy.example.com [go]'
 expect_plan 'domain    sum.golang.org [go]'
 [[ $plan_text != *GOBIN* ]] || fail 'GOBIN was passed although the host does not set it'
 
+slug="$(source "$REPO_DIR/lib/project.sh"; project_slug "$GO_PROJECT")"
 dry_run shell
-assert_mount "$STATE/cache/go-mod" "$TEST_HOME/go/pkg/mod" rw
-assert_mount "$STATE/cache/go-build" "$TEST_HOME/cache" rw
-assert_mount "$TEST_HOME/go/pkg/mod/cache/download" /var/cache/go-yolo/seed/go-mod ro
+for expected in "type=volume,source=go-yolo-$slug-go-mod,target=$TEST_HOME/go/pkg/mod" \
+                "type=volume,source=go-yolo-$slug-go-build,target=$TEST_HOME/cache" \
+                "GOYOLO_VOLUMES=$TEST_HOME/cache"$'\n'"$TEST_HOME/go/pkg/mod"; do
+  has_arg "$expected" || fail "the docker command lacks: $expected"
+done
 for arg in "${ARGS[@]}"; do
   case $arg in
     *"source=$TEST_HOME/go,"*|*"source=$TEST_HOME/go/pkg/mod,"*|*"source=$TEST_HOME/cache,"*|*"source=$TEST_HOME/toolchain,"*)
@@ -425,9 +432,8 @@ for arg in "${ARGS[@]}"; do
 done
 printf '%s\n' "${ARGS[@]}" | grep -qxF "GOYOLO_TOOL_PATH=$TEST_HOME/toolchain/bin:$TEST_HOME/go/bin" \
   || fail 'the Go toolchain and tools are not first on PATH'
-printf '%s\n' "${ARGS[@]}" | grep -qxF 'GOPROXY=file:///var/cache/go-yolo/seed/go-mod,https://proxy.example.com,direct' \
-  || fail 'GOPROXY does not start with the seed'
-pass 'Go: caches are project-local at the host paths; the host module cache is only a read-only seed'
+printf '%s\n' "${ARGS[@]}" | grep -qxF GOPROXY || fail "the host's GOPROXY is not passed"
+pass "Go: caches are the project's Docker volumes at the host's paths; no host Go directory is mounted"
 
 cp /dev/null "$TEST_DIR/docker.log"
 TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
@@ -440,7 +446,8 @@ dockerfile="$(cat "$STATE/build/Dockerfile")"
   || fail 'the parents of copied directories are not created with your ownership'
 grep -qxF -- "copy1=$TEST_HOME/toolchain" "$TEST_DIR/docker.log" && grep -qxF -- "copy2=$TEST_HOME/go/bin" "$TEST_DIR/docker.log" \
   || fail 'the copied directories are not passed as build contexts'
-[[ -d $STATE/cache/go-mod && -d $STATE/cache/go-build ]] || fail 'the project caches were not created'
+grep -qxF -- "go-yolo-$slug-go-mod" "$TEST_DIR/docker.log" && grep -qxF -- "go-yolo.cache=go-mod" "$TEST_DIR/docker.log" \
+  || fail 'the go-mod cache volume was not created with its labels'
 pass 'Go: GOROOT and GOBIN are copied into the image at the same paths, with the host ownership'
 
 # cgo: "// #cgo pkg-config: sqlite3" → the package owning sqlite3.pc, plus pkg-config's own.
@@ -518,10 +525,9 @@ expect_plan "toolchain $TEST_HOME/.sdkman/candidates/java/17.0.9-tem (17.0.9) [j
 expect_plan "link      $TEST_HOME/.sdkman/candidates/java/current → $TEST_HOME/.sdkman/candidates/java/17.0.9-tem [java]"
 expect_plan "toolchain $TEST_HOME/.gradle/jdks/eclipse_adoptium-25 (25.0.3) [java]  owned by you"
 expect_plan "mount     $TEST_HOME/.gradle/gradle.properties (read-only) [java]  ⚠ may hold credentials: the agent can read it"
-expect_plan "cache     $TEST_HOME/.gradle/caches ← .go-yolo/cache/gradle-caches [java]"
-expect_plan "cache     $TEST_HOME/.gradle/wrapper ← .go-yolo/cache/gradle-wrapper [java]  starts as a copy of the host's"
-expect_plan "seed      $TEST_HOME/.gradle/caches (read-only, as /var/cache/go-yolo/seed/gradle-caches) [java]"
-expect_plan 'env       GRADLE_RO_DEP_CACHE=/var/cache/go-yolo/seed/gradle-caches [java]  set by go-yolo'
+expect_plan "cache     $TEST_HOME/.gradle/caches (project volume gradle-caches) [java]"
+expect_plan "cache     $TEST_HOME/.gradle/wrapper (project volume gradle-wrapper) [java]"
+[[ $plan_text != *seed* && $plan_text != *GRADLE_RO_DEP_CACHE* ]] || fail "the host's Gradle cache is still a seed"
 expect_plan "env       JAVA_HOME=$TEST_DIR/jvm/java-21 [java]"
 expect_plan 'domain    gradle.example.com [java]'
 expect_plan "GOYOLO_TOOLS is no longer used"
@@ -541,8 +547,6 @@ done
 [[ $dockerfile != *"\"$TEST_DIR/jvm/java-21/\""* ]] || fail 'the apt JDK is copied instead of installed'
 [[ $dockerfile == *"ln -sfn $TEST_HOME/.sdkman/candidates/java/17.0.9-tem $TEST_HOME/.sdkman/candidates/java/current"* ]] \
   || fail 'the SDKMAN current link is not recreated'
-[[ -f $STATE/cache/gradle-wrapper/dists/gradle-9.6.0-bin/gradle-9.6.0-bin.zip.ok ]] \
-  || fail 'the Gradle wrapper cache did not start as a copy of the host one'
 pass "Java: every JDK Gradle could pick is planned (apt or copied), the default first on PATH; Gradle's caches are project-local"
 
 # A Maven project with a wrapper and a settings.xml with its own local repository and a mirror.
@@ -560,15 +564,15 @@ XML
 TEST_ENV=(JAVA_HOME="$TEST_DIR/jvm/java-21" MAVEN_ARGS=-ntp)
 plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
 expect_plan "mount     $TEST_HOME/.m2/settings.xml (read-only) [java]"
-expect_plan "cache     $TEST_HOME/m2repo ← .go-yolo/cache/m2-repository [java]"
-expect_plan "seed      $TEST_HOME/m2repo (read-only, as /var/cache/go-yolo/seed/m2-repository) [java]"
-expect_plan 'env       MAVEN_ARGS=-ntp -Dmaven.repo.local.tail=/var/cache/go-yolo/seed/m2-repository [java]  set by go-yolo'
+expect_plan "cache     $TEST_HOME/m2repo (project volume m2-repository) [java]"
+expect_plan 'env       MAVEN_ARGS=-ntp [java]'
+[[ $plan_text != *seed* ]] || fail "the host's Maven repository is still a seed"
 expect_plan 'domain    nexus.example.com [java]'
 expect_plan 'domain    maven.example.org [java]'
 [[ $plan_text != *'gradle'* ]] || fail 'a Maven project got Gradle items'
 rm -rf -- "$STATE" "$JAVA_PROJECT"/{pom.xml,mvnw,.mvn} "$TEST_HOME/.m2" "$TEST_HOME/m2repo"
 TEST_ENV=()
-pass "Java: Maven's settings, local repository (as cache and seed) and repository hosts are planned"
+pass "Java: Maven's settings, local repository (as a project volume) and repository hosts are planned"
 
 # extra tool: kotlin linked from a general bin/ is its real install; gradle through SDKMAN's
 # current link keeps the link; a plain file in a bin/ directory can't be copied on its own.
@@ -598,7 +602,8 @@ pass 'extra tool brings a host command: its install directory (keeping a current
 # plan and for an older one, a project that is gone, and an image from before go-yolo-base.
 base_tag="go-yolo-base:debian-trixie-$(REPO_DIR=$REPO_DIR; source "$REPO_DIR/lib/image.sh"; compute_hash)"
 mkdir -p "$TEST_DIR/projects/kept/.go-yolo"
-printf '# confirmed: today\nbase\thost\timage\t%s\t-\t-\n' "$base_tag" >"$TEST_DIR/projects/kept/.go-yolo/plan"
+printf '# confirmed: today\nbase\thost\timage\t%s\t-\t-\ncache\tgo\tvolume\t/x/go/pkg/mod\tgo-mod\t-\n' \
+  "$base_tag" >"$TEST_DIR/projects/kept/.go-yolo/plan"
 kept_hash="$(source "$REPO_DIR/lib/plan.sh"; confirmed_plan_hash "$TEST_DIR/projects/kept")"
 {
   printf '%s\tid1\t1 hour ago\t2GB\t\t\n' "$base_tag" go-yolo-base:debian-trixie
@@ -610,24 +615,44 @@ kept_hash="$(source "$REPO_DIR/lib/plan.sh"; confirmed_plan_hash "$TEST_DIR/proj
 } >"$TEST_DIR/images"
 current_tags=("$base_tag" go-yolo-base:debian-trixie "go-yolo:kept-1-$kept_hash")
 stale_tags=(go-yolo-base:debian-trixie-0ld0ba5e go-yolo:kept-1-0ldp1an0 go-yolo:gone-2-11111111 go-yolo:debian-trixie-5ebfa50a)
+# Volumes: a cache in the kept project's plan, one it no longer has, one of the gone project.
+printf '%s\t%s\t%s\t2026-11-09T10:00:00Z\t%s\n' \
+  go-yolo-kept-1-go-mod "$TEST_DIR/projects/kept" go-mod 50MB \
+  go-yolo-kept-1-npm "$TEST_DIR/projects/kept" npm 10MB \
+  go-yolo-gone-2-go-mod "$TEST_DIR/projects/gone" go-mod 70MB >"$TEST_DIR/volumes"
+
+# removed_items — the images and volumes the docker stub was asked to remove, one per line.
+removed_items() {
+  # The log has one "CALL" line per call, then one argument per line.
+  awk '$0 == "CALL" { flush(); n = 0; next } { arg[++n] = $0 } END { flush() }
+       function flush() {
+         if (arg[1] == "rmi") print arg[3]
+         if (arg[1] == "volume" && arg[2] == "rm") print "volume " arg[4]
+         split("", arg)
+       }' "$TEST_DIR/docker.log"
+}
 
 cp /dev/null "$TEST_DIR/docker.log"
 output="$(launch --prune 2>&1)"
-for tag in "${current_tags[@]}"; do [[ $output == *"✓ $tag "* ]] || fail "$tag not listed as current: $output"; done
-for tag in "${stale_tags[@]}"; do [[ $output == *"✗ $tag "* ]] || fail "$tag not listed as stale: $output"; done
+for tag in "${current_tags[@]}"; do [[ $output == *"✓ image  $tag "* ]] || fail "$tag not listed as current: $output"; done
+for tag in "${stale_tags[@]}"; do [[ $output == *"✗ image  $tag "* ]] || fail "$tag not listed as stale: $output"; done
+[[ $output == *'✓ volume go-yolo-kept-1-go-mod '*'50MB'*'go-mod cache of'* ]] || fail "the kept volume is not current: $output"
+[[ $output == *'✗ volume go-yolo-kept-1-npm '*'npm cache, no longer in the plan of'* ]] || fail "a dropped cache is not stale: $output"
+[[ $output == *'✗ volume go-yolo-gone-2-go-mod '*'project is gone'* ]] || fail "a gone project's volume is not stale: $output"
 [[ $output == *'an older plan of'* && $output == *'project is gone'* && $output == *'before go-yolo-base'* ]] \
   || fail "--prune does not say why images are stale: $output"
-! grep -qxF rmi "$TEST_DIR/docker.log" || fail '--prune removed images without a terminal or --yes'
-pass '--prune lists current and stale images with the reason, and only lists without a terminal'
+[[ -z $(removed_items) ]] || fail '--prune removed something without a terminal or --yes'
+pass '--prune lists current and stale images and cache volumes with the reason, and only lists without a terminal'
 
 mkdir -p "$TEST_HOME/.cache/go-yolo"
 : >"$TEST_HOME/.cache/go-yolo/base-packages-gone"
 cp /dev/null "$TEST_DIR/docker.log"
 TEST_IMAGE_STATUS=1 launch --prune --yes >/dev/null 2>&1
-removed="$(grep -A2 -xF rmi "$TEST_DIR/docker.log" | grep -v -e '^rmi$' -e '^--$' -e '^CALL$')"
-[[ $removed == "$(printf '%s\n' "${stale_tags[@]}")" ]] || fail "--prune --yes removed: $removed"
+removed="$(removed_items)"
+[[ $removed == "$(printf '%s\n' "${stale_tags[@]}" 'volume go-yolo-kept-1-npm' 'volume go-yolo-gone-2-go-mod')" ]] \
+  || fail "--prune --yes removed: $removed"
 [[ ! -e $TEST_HOME/.cache/go-yolo/base-packages-gone ]] || fail 'the package list of a removed base image was kept'
-pass '--prune --yes removes exactly the stale images and their cached package lists'
+pass '--prune --yes removes exactly the stale images and volumes, and stale cached package lists'
 
 # --- --parity ---------------------------------------------------------------
 
@@ -679,7 +704,7 @@ if command -v script >/dev/null 2>&1; then
     DOCKER_TEST_IMAGES="$TEST_DIR/images" FZF_TEST_PICK="$kept_hash" "$REPO_DIR/go-yolo.sh" --prune
   cp /dev/null "$TEST_DIR/docker.log"
   printf 'p\n' | TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null >/dev/null
-  removed="$(grep -A2 -xF rmi "$TEST_DIR/docker.log" | grep -v -e '^rmi$' -e '^--$' -e '^CALL$')"
+  removed="$(removed_items)"
   [[ $removed == "go-yolo:kept-1-$kept_hash" ]] || fail "[p]ick removed: $removed"
   rm -f "$TEST_DIR/bin/fzf"
   pass '--prune [p]ick removes exactly the picked images, current ones included'

@@ -18,15 +18,14 @@
 #   env      extra  env     GITHUB_TOKEN               sha256:5e6f..  hidden
 #   env      host   skip    HTTPS_PROXY                -              secret
 #   mount    go     ro      /home/me/.config/go/env    1a2b3c4d       -
-#   cache    go     rw      /home/me/go/pkg/mod        go-mod         -
-#   seed     go     ro      /home/me/go/pkg/mod/cache/download  go-mod  -
+#   cache    go     volume  /home/me/go/pkg/mod        go-mod         -
 #   domain   go     allow   proxy.golang.org           -              -
 #
 #   kind    built into the image: base, toolchain and tools (host directories copied at the
 #           same path), link, package, cert, locale;
 #           passed when the container starts: env; mount (a host file or directory, read-only, at
-#           the same path); cache (.go-yolo/cache/<value>, read-write, at the host's cache path);
-#           seed (a host cache, read-only, as /var/cache/go-yolo/seed/<value>); domain (allowed
+#           the same path); cache (the project's Docker volume <value>, at the host's cache
+#           path); domain (allowed
 #           with --net allowlist);
 #           parity: a base image package whose version differs from the host's (a warning)
 #   group   who asks for it: host (every project), extra (.go-yolo/config); later go, rust, ...
@@ -209,19 +208,17 @@ plan_mount() {
   plan_add mount "$group" ro "$path" "$value" "$flags"
 }
 
-# plan_cache GROUP PATH NAME [from-host] — the project cache .go-yolo/cache/NAME, read-write at
-# the host's cache path PATH. The host's own cache at PATH is never used; with from-host, it is
-# copied into the new project cache once, when that is created (for caches a tool must be able to
-# write to, so a read-only seed won't do, e.g. the Gradle wrapper's distributions).
+# plan_cache GROUP PATH NAME — the project's cache NAME: a Docker volume (see cache_volume),
+# mounted at the host's cache path PATH. It starts empty; the host's own cache at PATH is never
+# read or written.
 plan_cache() {
-  local group=$1 path=$2 name=$3 flags=${4:--}
+  local group=$1 path=$2 name=$3
   if config_has exclude cache "$path"; then
     plan_add cache "$group" skip "$path" "$name" excluded
     return 0
   fi
   validate_mount_path "$path"
-  if [[ $flags == from-host && ! -d $path ]]; then flags=-; fi
-  plan_add cache "$group" rw "$path" "$name" "$flags"
+  plan_add cache "$group" volume "$path" "$name"
 }
 
 # apt_owners PATH — print the apt packages that own PATH on the host, one per line (without a
@@ -262,22 +259,6 @@ plan_tool() {
   fi
   plan_copy toolchain "$group" "$home" "$(basename -- "$(realpath -- "$home")")" on-path
 }
-
-# plan_seed GROUP PATH NAME — the host's cache PATH, read-only as /var/cache/go-yolo/seed/NAME,
-# for tools that can read from such a cache without writing to it.
-plan_seed() {
-  local group=$1 path=$2 name=$3
-  [[ -d $path ]] || return 0
-  if config_has exclude seed "$path"; then
-    plan_add seed "$group" skip "$path" "$name" excluded
-    return 0
-  fi
-  validate_mount_path "$path"
-  plan_add seed "$group" ro "$path" "$name"
-}
-
-# The container path of seed NAME.
-seed_path() { printf '/var/cache/go-yolo/seed/%s' "$1"; }
 
 # plan_domain GROUP HOST — allow HOST with --net allowlist.
 plan_domain() {
@@ -359,7 +340,7 @@ plan_finish() {
     case $kind in
       base) rank=10 ;; toolchain) rank=11 ;; tools) rank=12 ;; link) rank=13 ;; package) rank=14 ;;
       parity) rank=15 ;; cert) rank=16 ;; locale) rank=17 ;;
-      mount) rank=20 ;; cache) rank=21 ;; seed) rank=22 ;; domain) rank=23 ;; *) rank=29 ;;
+      mount) rank=20 ;; cache) rank=21 ;; domain) rank=23 ;; *) rank=29 ;;
     esac
     ranked+=("$rank"$'\t'"$line")
   done
@@ -460,7 +441,6 @@ plan_note() {
     not-found) printf '⚠ no such apt package' ;;
     user-owned) printf 'owned by you, as on the host' ;;
     on-path) printf 'first on PATH' ;;
-    from-host) printf "starts as a copy of the host's" ;;
     may-hold-secrets) printf '⚠ may hold credentials: the agent can read it' ;;
     not-on-path) printf "⚠ not on the host's PATH: neither side has it" ;;
     not-in-bin-dir) printf "⚠ not copied: it isn't installed as <dir>/bin/<name>" ;;
@@ -481,8 +461,7 @@ plan_row() {
     package|parity) text="$name${value:+=$value}"; text=${text%=-} ;;
     toolchain|tools) text="$name ($value)" ;;
     link) text="$name → $value" ;;
-    cache) text="$name ← .go-yolo/cache/$value" ;;
-    seed) text="$name (read-only, as $(seed_path "$value"))" ;;
+    cache) text="$name (project volume $value)" ;;
     mount) text="$name (read-only)" ;;
     env) if [[ $value == - || $value == sha256:* ]]; then text=$name; else text="$name=$value"; fi ;;
     *) text=$name ;;

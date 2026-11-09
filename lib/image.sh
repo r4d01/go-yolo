@@ -29,11 +29,7 @@ choose_base_image() {
 }
 
 choose_project_image() {
-  local name path_hash
-  # Docker tags allow [A-Za-z0-9_.-]; repository names must be lowercase.
-  name="$(basename -- "$PROJECT_DIR" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_.\n-' '_' | cut -c1-40)"
-  path_hash="$(printf '%s' "$PROJECT_DIR" | sha256sum | cut -c1-8)"
-  IMAGE="go-yolo:${name}-${path_hash}-${PLAN_HASH}"
+  IMAGE="go-yolo:$PROJECT_SLUG-$PLAN_HASH"
 }
 
 # Print the base image's installed packages, one "name<TAB>version" per line; nothing if the

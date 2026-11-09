@@ -8,14 +8,11 @@
 #   mount      ~/.m2/settings.xml and toolchains.xml, GRADLE_USER_HOME's gradle.properties and
 #              init scripts: read-only
 #   cache      the Maven local repository and wrapper, Gradle's caches and wrapper: at the host's
-#              paths, from .go-yolo/cache/; the wrappers start as copies of the host's
-#   seed       the host's Maven local repository (maven.repo.local.tail, Maven >= 3.9) and Gradle
-#              dependency cache (GRADLE_RO_DEP_CACHE): read-only
-#   env        Java, Maven and Gradle variables set on the host; MAVEN_ARGS and
-#              GRADLE_RO_DEP_CACHE for the seeds
+#              paths, in the project's volumes (they start empty)
+#   env        Java, Maven and Gradle variables set on the host
 #   domain     Maven Central and the Gradle services; the hosts in settings.xml and the wrappers
 #
-# The host's ~/.m2 and GRADLE_USER_HOME are never written.
+# The host's ~/.m2 repository and Gradle caches are never read or written.
 
 JAVA_MAVEN_FILES=(pom.xml mvnw)
 JAVA_GRADLE_FILES=(build.gradle build.gradle.kts settings.gradle settings.gradle.kts gradlew)
@@ -48,7 +45,7 @@ java_resolve() {
     plan_env java "$name"
   done
   if java_uses maven; then
-    for name in MAVEN_OPTS MAVEN_CONFIG M2_HOME MAVEN_HOME; do plan_env java "$name"; done
+    for name in MAVEN_OPTS MAVEN_ARGS MAVEN_CONFIG M2_HOME MAVEN_HOME; do plan_env java "$name"; done
   fi
   if java_uses gradle; then
     for name in GRADLE_OPTS GRADLE_HOME GRADLE_USER_HOME $(compgen -e | grep '^ORG_GRADLE_PROJECT_' || true); do
@@ -147,14 +144,7 @@ java_plan_maven() {
   repo=${repo//'${user.home}'/$HOME_DIR}
   repo=${repo:-$m2/repository}
   plan_cache java "$repo" m2-repository
-  plan_seed java "$repo" m2-repository
-  plan_cache java "$m2/wrapper" m2-wrapper from-host
-
-  if plan_items seed ro | grep -qxF -- "$repo"; then
-    plan_env java MAVEN_ARGS "${MAVEN_ARGS:+$MAVEN_ARGS }-Dmaven.repo.local.tail=$(seed_path m2-repository)"
-  else
-    plan_env java MAVEN_ARGS
-  fi
+  plan_cache java "$m2/wrapper" m2-wrapper
 
   plan_domain java repo.maven.apache.org
   plan_domain java repo1.maven.org
@@ -173,12 +163,7 @@ java_plan_gradle() {
   if [[ -d $gradle_home/init.d ]]; then plan_mount java "$gradle_home/init.d"; fi
 
   plan_cache java "$gradle_home/caches" gradle-caches
-  # Gradle reads a read-only dependency cache from a directory with a modules-2/ in it.
-  if [[ -d $gradle_home/caches/modules-2 ]]; then
-    plan_seed java "$gradle_home/caches" gradle-caches
-    plan_env java GRADLE_RO_DEP_CACHE "$(seed_path gradle-caches)"
-  fi
-  plan_cache java "$gradle_home/wrapper" gradle-wrapper from-host
+  plan_cache java "$gradle_home/wrapper" gradle-wrapper
 
   for file in services.gradle.org downloads.gradle.org plugins.gradle.org plugins-artifacts.gradle.org \
               repo.maven.apache.org repo1.maven.org; do

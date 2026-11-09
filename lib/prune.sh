@@ -1,12 +1,14 @@
 # shellcheck shell=bash
-# --prune: list go-yolo's images and remove the ones nothing uses any more.
+# --prune: list go-yolo's images and cache volumes, and remove the ones nothing uses any more.
 #
-#   ✓ current  the base image of this go-yolo version; each project's image for its confirmed plan
-#   ✗ stale    an older base image; an image of an older plan; an image whose project directory
-#              is gone; an image from before the base image was called go-yolo-base
+#   ✓ current  the base image of this go-yolo version; each project's image for its confirmed
+#              plan; each cache volume in a project's confirmed plan
+#   ✗ stale    an older base image; an image of an older plan; an image or volume whose project
+#              directory is gone; a volume no longer in its project's plan; an image from before
+#              the base image was called go-yolo-base
 #
-# Without a terminal it only lists (--yes removes the stale images). Current images are only
-# removed when you pick them yourself.
+# Without a terminal it only lists (--yes removes the stale ones). Current images and volumes are
+# only removed when you pick them yourself.
 
 # image_status TAG PROJECT PLAN — print "current<TAB>why" or "stale<TAB>why" for one image.
 image_status() {
@@ -29,9 +31,22 @@ image_status() {
   esac
 }
 
-# Print one line per go-yolo image: status, tag, age, size, why (tab-separated).
+# volume_status PROJECT CACHE — print "current<TAB>why" or "stale<TAB>why" for one cache volume.
+volume_status() {
+  local project=$1 cache=$2
+  if [[ ! -d $project ]]; then
+    printf 'stale\tproject is gone: %s\n' "$project"
+  elif awk -F'\t' -v cache="$cache" '$1 == "cache" && $3 == "volume" && $5 == cache { found = 1 }
+                                      END { exit !found }' "$project/.go-yolo/plan" 2>/dev/null; then
+    printf 'current\t%s cache of %s\n' "$cache" "$project"
+  else
+    printf 'stale\t%s cache, no longer in the plan of %s\n' "$cache" "$project"
+  fi
+}
+
+# Print one line per go-yolo image: status, "image", tag, age, size, why (tab-separated).
 image_statuses() {
-  local line tag id age size project plan status why i
+  local tag id age size project plan status why i
   local tags=() ages=() sizes=() labels=()
   while IFS=$'\t' read -r tag id age size; do
     tags+=("$tag") ages+=("$age") sizes+=("$size")
@@ -45,18 +60,44 @@ image_statuses() {
   for i in "${!tags[@]}"; do
     IFS=$'\t' read -r project plan <<<"${labels[i]:-}"
     IFS=$'\t' read -r status why < <(image_status "${tags[i]}" "${project:-}" "${plan:-}")
-    printf '%s\t%s\t%s\t%s\t%s\n' "$status" "${tags[i]}" "${ages[i]}" "${sizes[i]}" "$why"
+    printf '%s\timage\t%s\t%s\t%s\t%s\n' "$status" "${tags[i]}" "${ages[i]}" "${sizes[i]}" "$why"
   done
 }
 
-# remove_images TAG... — docker rmi each tag; report what happened.
-remove_images() {
-  local tag output
-  for tag in "$@"; do
-    if output="$(docker rmi -- "$tag" 2>&1)"; then
-      note "removed $tag"
+# Print one line per go-yolo cache volume: status, "volume", name, created, size, why.
+volume_statuses() {
+  local name project cache created status why
+  local names=() labels=()
+  local -A sizes=()
+  mapfile -t names < <(docker volume ls --filter label=go-yolo.project --format '{{.Name}}')
+  ((${#names[@]})) || return 0
+
+  # `docker system df -v` has a table "VOLUME NAME  LINKS  SIZE" after "Local Volumes space usage:".
+  while read -r name _ size; do
+    sizes[$name]=$size
+  done < <(docker system df -v 2>/dev/null \
+             | awk '/^Local Volumes/ { in_table = 1; next } in_table && /^$/ && seen { exit }
+                    in_table && $1 ~ /^go-yolo-/ { print; seen = 1 }')
+  mapfile -t labels < <(docker volume inspect --format \
+    '{{index .Labels "go-yolo.project"}}{{"\t"}}{{index .Labels "go-yolo.cache"}}{{"\t"}}{{.CreatedAt}}' "${names[@]}")
+  for i in "${!names[@]}"; do
+    IFS=$'\t' read -r project cache created <<<"${labels[i]:-}"
+    IFS=$'\t' read -r status why < <(volume_status "$project" "$cache")
+    printf '%s\tvolume\t%s\t%s\t%s\t%s\n' "$status" "${names[i]}" "${created%%T*}" "${sizes[${names[i]}]:-?}" "$why"
+  done
+}
+
+# remove_items "image TAG" | "volume NAME" ... — remove each; report what happened.
+remove_items() {
+  local item type name command output
+  for item in "$@"; do
+    type=${item%% *} name=${item#* }
+    command=(docker rmi --)
+    if [[ $type == volume ]]; then command=(docker volume rm --); fi
+    if output="$("${command[@]}" "$name" 2>&1)"; then
+      note "removed $type $name"
     else
-      warn "could not remove $tag: ${output##*: }"
+      warn "could not remove $type $name: ${output##*: }"
     fi
   done
 }
@@ -72,49 +113,50 @@ clean_package_cache() {
 }
 
 prune_images() {
-  local rows=() stale=() choices=() picked=() row status tag age size why answer
+  local rows=() stale=() choices=() picked=() row status type name age size why answer mark
   command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
   detect_host
   choose_base_image
 
-  mapfile -t rows < <(image_statuses)
+  mapfile -t rows < <(image_statuses; volume_statuses)
   if ((${#rows[@]} == 0)); then
-    note "no go-yolo images"
+    note "no go-yolo images or cache volumes"
     clean_package_cache
     return 0
   fi
 
-  note "images (✓ in use, ✗ stale):"
+  note "images and cache volumes (✓ in use, ✗ stale):"
   for row in "${rows[@]}"; do
-    IFS=$'\t' read -r status tag age size why <<<"$row"
-    choices+=("$tag"$'\t'"$why")
+    IFS=$'\t' read -r status type name age size why <<<"$row"
+    choices+=("$type $name"$'\t'"$why")
     if [[ $status == stale ]]; then
-      stale+=("$tag")
-      printf '  %s %-46s %8s  %-18s %s\n' "$(ui_paint red ✗)" "$tag" "$size" "$age" "$(ui_paint dim "$why")" >&2
+      stale+=("$type $name")
+      mark="$(ui_paint red ✗)"
     else
-      printf '  %s %-46s %8s  %-18s %s\n' "$(ui_paint green ✓)" "$tag" "$size" "$age" "$(ui_paint dim "$why")" >&2
+      mark="$(ui_paint green ✓)"
     fi
+    printf '  %s %-6s %-46s %8s  %-18s %s\n' "$mark" "$type" "$name" "$size" "$age" "$(ui_paint dim "$why")" >&2
   done
-  note "sizes include the layers images share, so they don't add up"
+  note "image sizes include the layers images share, so they don't add up"
 
   if ((YES)); then
-    if ((${#stale[@]})); then remove_images "${stale[@]}"; else note "nothing stale to remove"; fi
+    if ((${#stale[@]})); then remove_items "${stale[@]}"; else note "nothing stale to remove"; fi
   elif [[ ! -t 0 || ! -t 2 ]]; then
-    note "run in a terminal to choose what to remove, or pass --yes to remove the ✗ images"
+    note "run in a terminal to choose what to remove, or pass --yes to remove the ✗ ones"
   else
     if ((${#stale[@]})); then
-      read -r -p "go-yolo: remove the ${#stale[@]} ✗ images? [y]es [n]o [p]ick: " answer
+      read -r -p "go-yolo: remove the ${#stale[@]} ✗ ones? [y]es [n]o [p]ick: " answer
     else
-      read -r -p "go-yolo: nothing is stale; pick images to remove anyway? [p]ick [n]o: " answer
+      read -r -p "go-yolo: nothing is stale; pick some to remove anyway? [p]ick [n]o: " answer
     fi
     case $answer in
-      y|yes) remove_images "${stale[@]}" ;;
+      y|yes) remove_items "${stale[@]}" ;;
       p|pick)
-        # Each choice is "tag<TAB>why"; remove the picked tags.
+        # Each choice is "type name<TAB>why"; remove the picked ones.
         while IFS= read -r row; do
           picked+=("${row%%$'\t'*}")
         done < <(ui_pick_many 'remove:' "${choices[@]}")
-        if ((${#picked[@]})); then remove_images "${picked[@]}"; else note "nothing removed"; fi
+        if ((${#picked[@]})); then remove_items "${picked[@]}"; else note "nothing removed"; fi
         ;;
       *) note "nothing removed" ;;
     esac

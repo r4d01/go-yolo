@@ -6,14 +6,13 @@
 #   package    the apt packages behind the project's `#cgo pkg-config:` names, and pkg-config
 #   mount      the GOENV file (`go env -w` settings); a go.work outside the repository, and the
 #              modules it uses outside the repository (read-only)
-#   cache      GOMODCACHE and GOCACHE at the host's paths, from .go-yolo/cache/go-mod, go-build
-#   seed       the host's module download cache, read-only: the first GOPROXY entry, so modules
-#              (and toolchains go.mod switches to) the host already has aren't downloaded again
-#   env        GOPATH, GOBIN, GOMODCACHE, GOCACHE, GOENV and GOPROXY (with the seed); the Go
+#   cache      GOMODCACHE and GOCACHE at the host's paths, in the project's volumes go-mod and
+#              go-build (they start empty: the host's own caches are never shared)
+#   env        GOPATH, GOBIN, GOMODCACHE, GOCACHE and GOENV as the host has them; the Go
 #              variables set in the host's environment
 #   domain     the GOPROXY and GOSUMDB hosts, for --net allowlist
 #
-# The host's own GOPATH, module cache and build cache are never written. The host's settings
+# The host's own GOPATH, module cache and build cache are never read or written. The host's settings
 # are read with GOTOOLCHAIN=local: just reading them must not make the host download a newer
 # toolchain that a go.mod asks for.
 
@@ -46,19 +45,13 @@ go_resolve() {
 
   plan_cache go "$gomodcache" go-mod
   if [[ $gocache != off ]]; then plan_cache go "$gocache" go-build; fi
-  if [[ $goproxy != off ]]; then plan_seed go "$gomodcache/cache/download" go-mod; fi
 
   plan_env go GOPATH "$gopath"
   if [[ -n ${values[3]} ]]; then plan_env go GOBIN "$gobin"; fi
   plan_env go GOMODCACHE "$gomodcache"
   plan_env go GOCACHE "$gocache"
   plan_env go GOENV "$goenv"
-  if plan_items seed ro | grep -qxF -- "$gomodcache/cache/download"; then
-    plan_env go GOPROXY "file://$(seed_path go-mod),$goproxy"
-  else
-    plan_env go GOPROXY "$goproxy"
-  fi
-  for name in GOFLAGS GOPRIVATE GONOPROXY GONOSUMDB GOSUMDB GOINSECURE GOTOOLCHAIN GOEXPERIMENT \
+  for name in GOPROXY GOFLAGS GOPRIVATE GONOPROXY GONOSUMDB GOSUMDB GOINSECURE GOTOOLCHAIN GOEXPERIMENT \
               GODEBUG GOOS GOARCH GOAMD64 GOARM GOARM64 GO386 CGO_ENABLED CC CXX \
               CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS PKG_CONFIG PKG_CONFIG_PATH; do
     plan_env go "$name"
@@ -137,10 +130,9 @@ go_plan_domains() {
   fi
 }
 
-# --parity probe (see lib/parity.sh): Go's version, settings and tools. GOPROXY isn't compared:
-# in the container the seed comes first on purpose.
+# --parity probe (see lib/parity.sh): Go's version, settings and tools.
 go_probe() {
-  local names=(GOROOT GOPATH GOBIN GOMODCACHE GOCACHE GOENV GOWORK GOFLAGS GOPRIVATE GONOSUMDB
+  local names=(GOROOT GOPATH GOBIN GOMODCACHE GOCACHE GOENV GOWORK GOPROXY GOFLAGS GOPRIVATE GONOSUMDB
                GOSUMDB GOINSECURE GOEXPERIMENT GOOS GOARCH GOAMD64 CGO_ENABLED CC CXX)
   local values=() i gobin
   if ! command -v go >/dev/null 2>&1; then

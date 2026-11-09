@@ -69,7 +69,7 @@ if ((!DRY_RUN)); then
   confirm_plan
 fi
 choose_project_image
-add_plan_mounts            # the plan's caches, seeds and read-only mounts
+add_plan_mounts            # the plan's cache volumes and read-only mounts
 if ((PARITY)); then prepare_parity; fi   # probes instead of an agent
 
 set_network_args
@@ -83,6 +83,7 @@ if ((DRY_RUN)); then
 fi
 
 ensure_project_image
+ensure_cache_volumes
 if ((PARITY)); then
   run_parity
   exit

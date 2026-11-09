@@ -71,10 +71,11 @@ after privileges are dropped.
   an MCP server to `~/.codex/config.toml`, or a plugin to `~/.config/opencode`. That code later runs
   **on the host** when you use the agent outside the container. The agent's credentials in that
   directory are readable too.
-- **Project caches in `.go-yolo/cache/`** (Go's module and build cache, Maven's and Gradle's). The agent can write
-  them, so one session can affect the next one of the same project, but nothing on the host uses
-  them. Your own `~/go`, `~/.cache/go-build`, `~/.m2` and `~/.gradle` are never written; the
-  host's module and dependency caches are only read (as read-only seeds).
+- **The project's cache volumes** (Go's module and build cache, Maven's and Gradle's). The agent
+  can write them, so one session can affect the next one of the same project, but no other
+  project and nothing on the host uses them. Your own `~/go`, `~/.cache/go-build`, `~/.m2` and
+  `~/.gradle` caches are never read or written, so an agent can't see other projects'
+  dependencies either.
 - **Settings files the plan mounts read-only**: `~/.m2/settings.xml` and `gradle.properties`
   often hold repository credentials, which the agent can read (the plan marks such files with
   ⚠). Exclude one with `exclude mount PATH`.
@@ -148,8 +149,7 @@ The first run creates `.go-yolo/` in the repository root for go-yolo's per-proje
 contains a `.gitignore` with `*`, so git ignores it without any change to your own `.gitignore`.
 Inside the container `.go-yolo/` is covered by an empty, read-only directory, so the agent can't
 see or change it. A `.go-yolo` that is a symlink, isn't owned by you, or has files tracked by git
-is refused: a repository must not ship it. If the project has a `Dockerfile` whose `.dockerignore`
-doesn't exclude `.go-yolo/`, go-yolo warns once.
+is refused: a repository must not ship it.
 
 ```bash
 cd ~/src/myproject
@@ -182,7 +182,7 @@ banner `yolo=ON` red, `net=open` yellow. `NO_COLOR` (or `TERM=dumb`) turns color
 `--color=always|never` overrides the detection. The agent's own output is never touched.
 
 ```
-go-yolo: claude in container go-yolo:myproject-d0c6fbb2-a02bf713 · plan a02bf713 (2026-11-09 10:12) · net=open · yolo=off · tmux · rw: ~/src/myproject, ~/.claude, ~/.claude.json, ~/go/pkg/mod, ~/.cache/go-build · ro: ~/.gitconfig, /var/cache/go-yolo/seed/go-mod
+go-yolo: claude in container go-yolo:myproject-d0c6fbb2-a02bf713 · plan a02bf713 (2026-11-09 10:12) · net=open · yolo=off · tmux · rw: ~/src/myproject, ~/.claude, ~/.claude.json, ~/go/pkg/mod, ~/.cache/go-build · ro: ~/.gitconfig
 ```
 
 Log in inside the container the first time (e.g. `/login` in Claude, `codex login`). The agent's
@@ -265,17 +265,16 @@ A project with a `go.mod` (or `go.work`) gets the host's Go, as the host's `go e
 |------|------|-----|
 | `toolchain` | `GOROOT` | copied into the image at the same path (its apt packages if it comes from apt) |
 | `tools` | `GOBIN`, or the first GOPATH entry's `bin/` | copied at the same path, owned by you: `go install` works in the container, but its results don't outlive it |
-| `cache` | `GOMODCACHE`, `GOCACHE` | at the host's paths, but from `.go-yolo/cache/go-mod` and `go-build`; they persist between runs |
-| `seed` | the host's `$GOMODCACHE/cache/download` | read-only as `/var/cache/go-yolo/seed/go-mod`, the first `GOPROXY` entry: modules (and toolchains a `go.mod` switches to) the host already has aren't downloaded again |
+| `cache` | `GOMODCACHE`, `GOCACHE` | the project's Docker volumes `go-mod` and `go-build`, at the host's paths; they start empty and persist between runs |
 | `mount` | the `GOENV` file (`go env -w` settings); a `go.work` outside the repository and the modules it uses outside it | read-only at the same path, with a warning for the outside ones |
 | `package` | the libraries of `#cgo pkg-config: NAME` lines (the package owning `NAME.pc` on the host), and pkg-config | apt, at the host's versions |
-| `env` | `GOPATH`, `GOBIN`, `GOMODCACHE`, `GOCACHE`, `GOENV`, `GOPROXY` (seed first); Go variables set in your environment (`GOFLAGS`, `GOPRIVATE`, `CGO_ENABLED`, `CC`, ...) | `docker run -e` |
+| `env` | `GOPATH`, `GOBIN`, `GOMODCACHE`, `GOCACHE`, `GOENV`; Go variables set in your environment (`GOFLAGS`, `GOPRIVATE`, `CGO_ENABLED`, `CC`, ...) | `docker run -e` |
 | `domain` | the `GOPROXY` and `GOSUMDB` hosts | allowed with `--net allowlist` |
 
 The toolchain and tools are first on `PATH`. Your `~/go`, `~/go/bin` and `~/.cache/go-build`
-are never mounted, so nothing the agent does there reaches the host. With the seed, a build
-works even with `--net none` as long as the host has the modules. `--parity` compares `go
-version`, `go env` (except `GOPROXY`, which starts with the seed on purpose) and the tools.
+are never mounted, so nothing the agent does there reaches the host. The first build of a
+project downloads its modules into the project's volume (so it needs the network); later builds
+work with `--net none`. `--parity` compares `go version`, `go env` and the tools.
 
 ### Java
 
@@ -287,8 +286,7 @@ gets the host's Java:
 | `toolchain` | **every JDK the build could pick as a toolchain**: `/usr/lib/jvm/*`, SDKMAN, `~/.jdks` (IntelliJ), mise, asdf; for Gradle also its provisioned JDKs (`~/.gradle/jdks`) and `org.gradle.java.installations.paths`, for Maven `toolchains.xml`'s `jdkHome`s | apt packages for apt-installed JDKs (and links such as `default-java`), copies at the same path, owned as on the host, for the rest; the default `java` (`$JAVA_HOME`, else the one on `PATH`) first on `PATH` |
 | `toolchain` | Maven or Gradle, if the project has no wrapper | as `extra tool` does |
 | `mount` | `~/.m2/settings.xml`, `toolchains.xml`; `GRADLE_USER_HOME`'s `gradle.properties`, `init.gradle(.kts)`, `init.d/` | read-only at the same path |
-| `cache` | the Maven local repository (`<localRepository>` or `~/.m2/repository`) and `~/.m2/wrapper`; Gradle's `caches/` and `wrapper/` | at the host's paths, from `.go-yolo/cache/`; the wrapper caches start as a copy of the host's (a wrapper must be able to lock its distributions, so a read-only seed won't do) |
-| `seed` | the host's Maven local repository; Gradle's `caches/` (with `modules-2/`) | read-only, used through `MAVEN_ARGS=-Dmaven.repo.local.tail=...` (Maven 3.9 and later) and `GRADLE_RO_DEP_CACHE` |
+| `cache` | the Maven local repository (`<localRepository>` or `~/.m2/repository`) and `~/.m2/wrapper`; Gradle's `caches/` and `wrapper/` | the project's Docker volumes, at the host's paths; they start empty, so the first build downloads the wrapper's distribution and the dependencies |
 | `env` | `JAVA_HOME`, `JAVA_OPTS`, `JAVA_TOOL_OPTIONS`, ...; for Maven `MAVEN_OPTS`, ...; for Gradle `GRADLE_OPTS`, `GRADLE_USER_HOME`, `ORG_GRADLE_PROJECT_*` (secrets filtered) | `docker run -e` |
 | `domain` | Maven Central, the Gradle services, the hosts in `settings.xml` and the wrappers' download URLs | allowed with `--net allowlist` |
 
@@ -359,7 +357,7 @@ Each path is mounted at the **same absolute path**, and only if it exists:
 | `$PWD/.go-yolo`                              | hidden     | always (an empty read-only tmpfs covers it)         |
 | `~/.gitconfig`                               | read-only  | if it exists                                        |
 | `~/.config/git/config`, `ignore`, `attributes` | read-only | each file, if it exists                            |
-| the plan's `mount`, `cache` and `seed` items | read-only; caches read-write from `.go-yolo/cache/` | see [The plan](#the-plan), [Go](#go) and [Java](#java) |
+| the plan's `mount` and `cache` items | read-only; caches are the project's Docker volumes | see [The plan](#the-plan), [Go](#go) and [Java](#java) |
 | the selected agent's config (table below)    | read-write | that agent only, never another agent's config      |
 | each `--mount` / `GOYOLO_MOUNTS` path        | read-only, or `:rw` | when given (see below)                     |
 
@@ -502,21 +500,24 @@ The base image is tagged `go-yolo-base:<distro>-<codename>-<hash>` (plus
 `agents/`, `firewall/` and `tmux/`, so editing any of them triggers a rebuild. A new base changes
 every project's plan, so each project shows the change and rebuilds its image on its next run.
 `--rebuild` rebuilds both images without the build cache. Old images are not deleted
-automatically; `go-yolo.sh --prune` lists them:
+automatically, and neither are the projects' cache volumes; `go-yolo.sh --prune` lists both:
 
 ```
-go-yolo: images (✓ in use, ✗ stale):
-  ✓ go-yolo-base:debian-trixie                     2.4GB  2 hours ago        points to the newest base image
-  ✓ go-yolo-base:debian-trixie-5a5324ec            2.4GB  2 hours ago        the base image of this go-yolo version
-  ✗ go-yolo-base:debian-trixie-3c23a8bf            2.3GB  3 days ago         an older base image
-  ✓ go-yolo:myapp-d0c6fbb2-a02bf713                2.4GB  2 hours ago        /home/me/src/myapp
-  ✗ go-yolo:myapp-d0c6fbb2-77e1c2a9                2.4GB  3 days ago         an older plan of /home/me/src/myapp
-  ✗ go-yolo:oldapp-1b2c3d4e-5f6a7b8c               2.4GB  2 weeks ago        project is gone: /home/me/src/oldapp
-go-yolo: remove the 3 ✗ images? [y]es [n]o [p]ick:
+go-yolo: images and cache volumes (✓ in use, ✗ stale):
+  ✓ image  go-yolo-base:debian-trixie                     2.4GB  2 hours ago        points to the newest base image
+  ✓ image  go-yolo-base:debian-trixie-5a5324ec            2.4GB  2 hours ago        the base image of this go-yolo version
+  ✗ image  go-yolo-base:debian-trixie-3c23a8bf            2.3GB  3 days ago         an older base image
+  ✓ image  go-yolo:myapp-d0c6fbb2-a02bf713                2.4GB  2 hours ago        /home/me/src/myapp
+  ✗ image  go-yolo:myapp-d0c6fbb2-77e1c2a9                2.4GB  3 days ago         an older plan of /home/me/src/myapp
+  ✗ image  go-yolo:oldapp-1b2c3d4e-5f6a7b8c               2.4GB  2 weeks ago        project is gone: /home/me/src/oldapp
+  ✓ volume go-yolo-myapp-d0c6fbb2-go-mod           50.3MB  2026-11-09         go-mod cache of /home/me/src/myapp
+  ✗ volume go-yolo-oldapp-1b2c3d4e-go-mod           120MB  2026-10-20         project is gone: /home/me/src/oldapp
+go-yolo: remove the 4 ✗ ones? [y]es [n]o [p]ick:
 ```
 
 An image is current if it is the base image of this go-yolo version, or a project's image for
-its confirmed plan. `p` lets you pick what to remove (with fzf if it is installed, otherwise one
+its confirmed plan; a cache volume is current if its project's confirmed plan still has that
+cache. `p` lets you pick what to remove (with fzf if it is installed, otherwise one
 y/n question per image), current images included. Without a terminal `--prune` only lists;
 `--prune --yes` removes the stale images without asking. Images a running container uses can't be
 removed; `--prune` says so and goes on. Cached package lists of removed base images are deleted
@@ -578,8 +579,10 @@ skip when Docker is unavailable.
 - Only the host's primary GID is mapped. Supplementary groups are not.
 - Running as root on the host (UID 0) is refused.
 - Only the GOPATH's first entry's `bin/` is copied when GOPATH is a list (as `go install` uses it).
-- Private modules (`GOPRIVATE`, `GONOPROXY`) that aren't in the seed are fetched directly, as on
-  the host, but the container has no SSH keys or `~/.netrc`, so that fails.
+- Private modules (`GOPRIVATE`, `GONOPROXY`) are fetched directly, as on the host, but the
+  container has no SSH keys or `~/.netrc`, so that fails.
+- A project's first build downloads all its dependencies into its cache volumes, so it needs the
+  network (`--net allowlist` allows the usual registries).
 - OAuth logins that redirect to `localhost` on the host don't reach the container. Use a device
   code flow or an API key where the agent offers one.
 - The agent's config directory is shared with the host install of the same agent (by design: one
