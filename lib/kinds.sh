@@ -37,11 +37,10 @@ done <<'EOF'
 on-path                behaviour  first on PATH
 derived                behaviour  set by go-yolo
 user-owned             behaviour  owned by you, as on the host
-excluded               note       excluded in .go-yolo/config
-secret                 note       not passed: looks like a secret (to pass it: extra env %s)
 hidden                 note       value not shown
 empty                  note       empty value
-not-set                note       not passed: not set on the host
+not-set                warning    picked, but not set on the host: not passed
+gone                   warning    picked, but the host doesn't have it (any more): go-yolo.sh --setup
 host-behind            warning    the base image has this newer version, the host has %v (apt upgrade the host to match)
 host-ahead             warning    the base image has this older version, the host has %v (go-yolo.sh --rebuild updates the base image)
 host-older             warning    the host has %v, an older version: the image gets the archive's version (apt upgrade the host to match)

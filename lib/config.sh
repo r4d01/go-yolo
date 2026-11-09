@@ -1,59 +1,102 @@
 # shellcheck shell=bash
-# .go-yolo/config: the user's choices for this project.
+# .go-yolo/config: what this project's container gets, as picked in the setup picker.
 #
-# One item per line; `#` starts a comment:
+# One picked item per line, "mode catalog kind id"; `#` starts a comment:
 #
-#   extra    package  protobuf-compiler    also install this apt package
-#   extra    env      GITHUB_TOKEN         also pass this host environment variable
-#   extra    tool     kotlin               also bring this host command (its install directory)
-#   extra    mount    /home/me/notes       also mount this host path read-only
-#   exclude  package  libx11-dev           leave out an item the plan would include
-#   exclude  cert     /usr/local/share/ca-certificates/old.crt
-#   exclude  locale   cs_CZ.UTF-8
+#   image  go    toolchain  -                  the Go toolchain (installed in the image)
+#   image  go    tools      -                  the tools in GOBIN
+#   cache  go    cache      modules            the module cache (a project volume)
+#   mount  go    mount      goenv              the GOENV file (read-only)
+#   env    go    env        GOPRIVATE          a host environment variable
+#   image  java  jdk        /usr/lib/jvm/java-21-openjdk-amd64
+#   image  host  package    protobuf-compiler  an apt package
+#   image  host  tool       kotlin             a host command (its install directory)
+#   mount  host  mount      /home/me/notes     a host path (read-only)
+#   env    host  env        GITHUB_TOKEN       a host environment variable
 #
-# The file is parsed, never sourced. The container can't see it (.go-yolo/ is hidden) and a
-# repository can't ship it (tracked .go-yolo/ files are refused).
+# The config says *what*; versions are read from the host on every run. go-yolo.sh --setup
+# writes it (the setup picker, lib/setup.sh); editing it by hand works too. It is parsed, never
+# sourced. The container can't see it (.go-yolo/ is hidden) and a repository can't ship it
+# (tracked .go-yolo/ files are refused).
 #
-# Sets: CONFIG_ITEMS  one "verb kind name" string per config line
+# An old config ("extra KIND NAME" / "exclude KIND NAME" lines) is converted by the setup,
+# which keeps it as config.old.
+#
+# Sets: CONFIG_ITEMS  one "mode<TAB>catalog<TAB>kind<TAB>id" string per picked item
+#       CONFIG_OLD    the lines of an old-format config (empty for a new-format one)
 
-CONFIG_KINDS="package cert locale env toolchain tools tool mount cache"
+CONFIG_MODES="image mount cache env"
 CONFIG_ITEMS=()
+CONFIG_OLD=()
 
 config_file() { printf '%s/.go-yolo/config' "$PROJECT_DIR"; }
 
+# True if this project has a config in the current format (its setup has been done).
+have_config() { [[ -f $(config_file) ]] && ((${#CONFIG_OLD[@]} == 0)); }
+
 load_config() {
-  local file line verb kind name rest number=0
+  local file line mode catalog kind id number=0
   file="$(config_file)"
   CONFIG_ITEMS=()
+  CONFIG_OLD=()
   [[ -f $file ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     number=$((number + 1))
     line=${line%%#*}
-    verb="" kind="" name="" rest=""
-    read -r verb kind name rest <<<"$line" || true
-    [[ -n $verb ]] || continue
-    [[ $verb == extra || $verb == exclude ]] \
-      || die "$file:$number: unknown '$verb' (use extra or exclude)"
-    [[ " $CONFIG_KINDS " == *" $kind "* ]] \
-      || die "$file:$number: unknown kind '$kind' (use one of: $CONFIG_KINDS)"
-    [[ -n $name && -z $rest ]] || die "$file:$number: expected '$verb $kind <name>'"
-    CONFIG_ITEMS+=("$verb $kind $name")
+    mode="" catalog="" kind="" id=""
+    read -r mode catalog kind id <<<"$line" || true
+    [[ -n $mode ]] || continue
+    if [[ $mode == extra || $mode == exclude ]]; then
+      CONFIG_OLD+=("$mode $catalog $kind")   # old format: verb, kind, name
+      continue
+    fi
+    [[ " $CONFIG_MODES " == *" $mode "* ]] \
+      || die "$file:$number: unknown mode '$mode' (use one of: $CONFIG_MODES)"
+    [[ " ${CATALOGS[*]} " == *" $catalog "* ]] \
+      || die "$file:$number: unknown catalog '$catalog' (one of: ${CATALOGS[*]})"
+    [[ -n $kind && -n $id ]] || die "$file:$number: expected '$mode $catalog <kind> <id>'"
+    CONFIG_ITEMS+=("$mode"$'\t'"$catalog"$'\t'"$kind"$'\t'"$id")
   done <"$file"
 }
 
-# config_has extra|exclude KIND NAME — true if the config has that line.
-config_has() {
+# picked CATALOG KIND ID — true if the config picks that item.
+picked() {
   local item
   for item in "${CONFIG_ITEMS[@]}"; do
-    if [[ $item == "$1 $2 $3" ]]; then return 0; fi
+    if [[ ${item#*$'\t'} == "$1"$'\t'"$2"$'\t'"$3" ]]; then return 0; fi
   done
   return 1
 }
 
-# config_extras KIND — print the names of the `extra KIND` lines, one per line.
-config_extras() {
-  local item
+# catalog_picked CATALOG — true if the config picks anything from CATALOG.
+catalog_picked() {
+  local item mode catalog rest
   for item in "${CONFIG_ITEMS[@]}"; do
-    if [[ $item == "extra $1 "* ]]; then printf '%s\n' "${item#"extra $1 "}"; fi
+    IFS=$'\t' read -r mode catalog rest <<<"$item"
+    if [[ $catalog == "$1" ]]; then return 0; fi
   done
+  return 1
+}
+
+# picked_ids CATALOG KIND — print the ids of the picked items of that kind, one per line.
+picked_ids() {
+  local item mode catalog kind id
+  for item in "${CONFIG_ITEMS[@]}"; do
+    IFS=$'\t' read -r mode catalog kind id <<<"$item"
+    if [[ $catalog == "$1" && $kind == "$2" ]]; then printf '%s\n' "$id"; fi
+  done
+}
+
+# save_config ITEM... — write .go-yolo/config with these "mode<TAB>catalog<TAB>kind<TAB>id" items.
+save_config() {
+  local item mode catalog kind id
+  {
+    printf '# go-yolo setup for %s: what the container gets.\n' "$PROJECT_DIR"
+    printf '# One item per line, "mode catalog kind id"; go-yolo.sh --setup picks them, editing\n'
+    printf '# by hand works too. Versions are read from the host on every run.\n'
+    for item in "$@"; do
+      IFS=$'\t' read -r mode catalog kind id <<<"$item"
+      printf '%-6s %-8s %-10s %s\n' "$mode" "$catalog" "$kind" "$id"
+    done
+  } >"$(config_file)"
 }

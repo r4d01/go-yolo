@@ -60,22 +60,17 @@ grep -qxF -- "go-yolo-$slug-go-mod" "$TEST_DIR/docker.log" && grep -qxF -- "go-y
   || fail 'the go-mod cache volume was not created with its labels'
 pass 'Go: GOROOT and GOBIN are copied into the image at the same paths, with the host ownership'
 
-# cgo: "// #cgo pkg-config: sqlite3" → the package owning sqlite3.pc, plus pkg-config's own.
-printf '// #cgo pkg-config: sqlite3 --static\nimport "C"\n' >"$GO_PROJECT/db.go"
-: >"$TEST_DIR/pc/sqlite3.pc"
-printf 'libsqlite3-dev: %s\npkgconf-bin: %s\n' "$TEST_DIR/pc/sqlite3.pc" "$TEST_DIR/bin/pkg-config" >"$TEST_DIR/dpkg-S"
-# A go.work in a parent directory, using the repository and a module beside it.
+# A go.work in a parent directory, using the repository and a module beside it, on a first setup.
+rm -f -- "$STATE/config"
 mkdir -p "$TEST_HOME/shared"
 : >"$TEST_HOME/go.work"
 TEST_ENV=(GOWORK="$TEST_HOME/go.work" GO_TEST_WORK_JSON='{"Use": [{"DiskPath": "./project"}, {"DiskPath": "./shared"}]}'
           GOYOLO_GOPATH_MODE=rw)
 plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
-expect_plan 'package   libsqlite3-dev=3.46.1-2 [go]'
-expect_plan 'package   pkgconf-bin=1.8.1-4 [go]'
 expect_plan "mount     $TEST_HOME/go.work (read-only) [go]  ⚠ outside the repository: read-only in the container"
 expect_plan "mount     $TEST_HOME/shared (read-only) [go]  ⚠ outside the repository"
 [[ $plan_text != *"mount     $GO_PROJECT "* ]] || fail 'the repository itself was planned as a go.work mount'
 expect_plan 'GOYOLO_GOPATH_MODE is no longer used'
-rm -rf -- "$STATE" "$GO_PROJECT/go.mod" "$GO_PROJECT/db.go" "$TEST_HOME/go.work"
+rm -rf -- "$STATE" "$GO_PROJECT/go.mod" "$TEST_HOME/go.work"
 TEST_ENV=()
-pass 'Go: cgo pkg-config libraries, and a go.work outside the repository, are planned'
+pass 'Go: a go.work outside the repository is mounted read-only, with the modules it uses outside it'

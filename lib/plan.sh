@@ -90,13 +90,12 @@ plan_value() {
   return 1
 }
 
-# Load .go-yolo/config and let every catalog add its items.
+# Let every catalog add the items for what the setup picked (CONFIG_ITEMS).
 resolve_plan() {
   local catalog
-  load_config
   PLAN=()
   for catalog in "${CATALOGS[@]}"; do
-    if "${catalog}_detect"; then "${catalog}_resolve"; fi
+    "${catalog}_resolve"
   done
   plan_finish
 }

@@ -14,7 +14,7 @@ expect_plan 'package   locales=2.41-12'
 expect_plan 'locale    en_US.utf8'
 expect_plan 'locale    sr_RS@latin'
 expect_plan "locale    xx_XX.UTF-8  ⚠ not generated: not in the host's list of supported locales"
-expect_plan 'locale    cs_CZ.UTF-8  excluded in .go-yolo/config'
+[[ $plan_text != *cs_CZ* ]] || fail 'an unpicked locale is in the plan'
 [[ $plan_text != *'locale    C'* ]] || fail 'the built-in C locale was planned'
 dry_run shell
 for expected in "GOYOLO_UMASK=$(umask)" LANG LC_TIME LC_PAPER; do
@@ -28,9 +28,6 @@ dockerfile="$(cat "$STATE/build/Dockerfile")"
   || fail 'Dockerfile does not generate sr_RS@latin'
 [[ $dockerfile != *xx_XX* && $dockerfile != *cs_CZ* ]] || fail 'Dockerfile generates a left-out locale'
 
-printf 'exclude package locales\n' >"$STATE/config"
-plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
-expect_plan "locale    en_US.utf8  ⚠ not generated: the locales package isn't in the plan"
 rm -rf -- "$STATE"
 TEST_ENV=()
 pass "the host's locales are generated in the image; umask and locale variables are passed"

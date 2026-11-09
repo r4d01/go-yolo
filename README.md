@@ -18,6 +18,7 @@ opts:    --net open|allowlist|none   (default: open)
          --rebuild                   force image rebuild
          --yes                       use a new or changed plan without asking (never from env)
          --plan                      show every plan item (default: a summary, warnings in full)
+         --setup                     pick what this project's container gets (alone: just that)
          --yolo                      turn off the agent's permission prompts (default: off)
          --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY,
                                      except for non-interactive runs such as claude -p;
@@ -79,7 +80,7 @@ after privileges are dropped.
   dependencies either.
 - **Settings files the plan mounts read-only**: `~/.m2/settings.xml` and `gradle.properties`
   often hold repository credentials, which the agent can read (the plan marks such files with
-  ⚠). Exclude one with `exclude mount PATH`.
+  ⚠). Leave one out in `go-yolo.sh --setup`.
 - `~/.gitconfig` and `~/.config/git/{config,ignore,attributes}` are mounted read-only, so the
   agent can read them (they usually hold no secrets; `~/.config/git/credentials` is not mounted).
 - Anything you add with `--mount` or `GOYOLO_MOUNTS`. A read-only mount can still be read and,
@@ -98,7 +99,7 @@ after privileges are dropped.
 - Optional: Go on the host. A project with a `go.mod` gets a copy of its toolchain and tools
   (see [Go](#go)).
 - Optional: a JDK, Maven, Gradle on the host. A Maven or Gradle project gets copies of them (see
-  [Java](#java)); other host commands with `extra tool NAME`.
+  [Java](#java)); other host commands can be added in the setup.
 
 The image's base matches the host (`debian:<codename>`, `ubuntu:<codename>` or
 `kalilinux/kali-rolling`), so host binaries copied or mounted into it (the Go toolchain,
@@ -191,6 +192,51 @@ config directory is mounted from the host, so the login persists and is shared w
 the host. Codex's browser login needs a callback on `localhost:1455`, which doesn't reach the
 container, so use `codex login --device-auth` or an API key.
 
+### Setup: what the container gets
+
+The first time you run go-yolo in a project (or with `go-yolo.sh --setup`), a **picker** lists
+what your host has, from every catalog, and you pick what this project's container gets:
+
+```
+go-yolo: pick what this project's container gets (versions always come from the host):
+  host   image  locale en_US.UTF-8 (generated in the image)
+  host   env    time zone Europe/Prague
+  go     image  Go go1.27.0 (/opt/go/1.27.0)
+  go     image  tools in /home/me/go/bin: dlv gopls
+  go     cache  module cache (a project volume at /home/me/go/pkg/mod)
+  go     cache  build cache (a project volume at /home/me/.cache/go-build)
+  java   image  JDK 21.0.12.1, your default java, from apt (/usr/lib/jvm/java-21-openjdk-amd64)
+  java   image  JDK 25.0.3 (/home/me/.gradle/jdks/eclipse_adoptium-25-amd64-linux.2)
+  java   cache  gradle-caches (a project volume at /home/me/.gradle/caches)
+  ...
+go-yolo: add more, e.g. 'package protobuf-compiler', 'tool kotlin', 'mount ~/notes', 'env GITHUB_TOKEN' (Enter: done):
+```
+
+On a first setup a few items are **pre-selected from simple hints** (a `go.mod` pre-selects the
+Go items, a `build.gradle` the JDKs and Gradle's caches); everything else is your choice. With
+fzf installed it is an fzf multi-select (TAB picks), otherwise a numbered list to toggle
+(`3 5-7`, `a` all, `n` none). Then you can add apt packages, host commands, read-only mounts
+and env variables by name. Variables that look like secrets are listed but never pre-selected.
+
+The picks are saved in `.go-yolo/config`, one per line (editing it by hand works too):
+
+```
+image  go       toolchain  -
+image  go       tools      -
+cache  go       cache      modules
+image  java     jdk        /usr/lib/jvm/java-21-openjdk-amd64
+image  host     package    protobuf-compiler
+env    host     env        GITHUB_TOKEN
+```
+
+The config says **what**, never which version: versions are read from the host on every run.
+After the setup nothing is detected again; a new JDK on the host, say, shows up in the picker
+the next time you run `--setup`. A picked item the host no longer has gets a ⚠ in the plan.
+
+Without a terminal, a project without a setup stops with a hint, unless you pass `--yes` (take
+the suggested picks); a dry run previews the suggested picks without saving them. An old config
+(`extra`/`exclude` lines) is converted on the next setup and kept as `config.old`.
+
 ### The plan
 
 Before anything is built, go-yolo works out a **plan**: what goes into the project's image and
@@ -199,7 +245,7 @@ the same for every project and holds nothing from your host.) A new plan is show
 one line per group plus every item with a warning in full, and you confirm it:
 
 ```
-go-yolo: plan for /home/me/src/myapp (new; edit .go-yolo/config to change it):
+go-yolo: plan for /home/me/src/myapp (new; go-yolo.sh --setup changes the picks):
   host:  base debian-trixie-d33d4892, 1 locale, 4 parity notes, 1 env
   go:    toolchain go1.27.0, tools (2 files), 2 caches, 3 domains, 5 env
   extra: 2 packages
@@ -227,22 +273,21 @@ go-yolo: plan updated, nothing new exposed: package zlib1g-dev 1:1.3.dfsg+really
 Without a terminal, a plan that needs asking is never used: go-yolo exits with an error unless you
 pass `--yes`. A dry run shows the plan and goes on without saving it.
 
-What every project gets:
+The host items:
 
 | item | what | how |
 |------|------|-----|
-| `base` | the shared base image (OS, agents, entrypoint) | `FROM go-yolo-base:<distro>-<codename>-<hash>` |
-| `parity` | base image packages whose version differs from the host's: a warning only | the base installs the archive's current versions; `apt upgrade` the host, or `--rebuild` the base, to match |
+| `base` | the shared base image (OS, agents, entrypoint): always | `FROM go-yolo-base:<distro>-<codename>-<hash>` |
+| `parity` | base image packages whose version differs from the host's: always, a warning only | the base installs the archive's current versions; `apt upgrade` the host, or `--rebuild` the base, to match |
 | `cert` | the host's extra CA certificates (`/usr/local/share/ca-certificates`) | copied to the same path, `update-ca-certificates` |
 | `locale` | the locales of `LANG`, `LC_ALL` and `LC_*` (C and POSIX are built in), plus the `locales` package | `localedef` in the image, as `locale-gen` would; a locale the host doesn't support is left out with a warning |
-| `env` | `TZ` (the host's time zone), proxy variables (`HTTP_PROXY`, `https_proxy`, `NO_PROXY`, ...) | passed by name with `docker run -e NAME`, never baked into the image |
-| `package` | `extra package` items from `.go-yolo/config` | `apt-get install name=version` |
+| `env` | `TZ` (the host's time zone), proxy variables (`HTTP_PROXY`, `https_proxy`, `NO_PROXY`, ...), variables added by name | passed with `docker run -e`, never baked into the image |
+| `package` | apt packages added by name | `apt-get install name=version` |
 
 The base image's own packages (git, gcc, libc6, ...) come from the archive when the base is
-built, so they can differ from the host's: each difference is a `parity` warning. Until the
-base image exists there is nothing to compare; on the first run go-yolo builds it after you
-confirm the plan, then shows the differences as a change to confirm before the project image is
-built. The base image's package list is cached in `~/.cache/go-yolo/`.
+built, so they can differ from the host's: each difference is a `parity` warning. The base
+image is built before the plan is resolved, so the comparison is in the first plan already. The
+base image's package list is cached in `~/.cache/go-yolo/`.
 
 Packages get the **host's version**, so the container matches the host. The image never
 downgrades a package: if the host is behind the archive, the image gets the archive's newer
@@ -252,19 +297,8 @@ host. Packages whose host version isn't in the distro archive (third-party repos
 backports) can't be installed and are left out, with a warning.
 
 Variables that look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*KEY*`, `*CREDENTIAL*`,
-`*AUTH*`, or a URL with a password) are only passed when you list them as `extra env NAME`. Their
-values are never shown or stored, only a hash, so a change is still noticed.
-
-`.go-yolo/config` holds your choices, one per line:
-
-```
-extra    package  protobuf-compiler    # also install this apt package
-extra    env      GITHUB_TOKEN         # also pass this host variable
-exclude  package  libx11-dev           # leave out an item the plan would include
-exclude  cert     /usr/local/share/ca-certificates/old.crt
-exclude  locale   cs_CZ.UTF-8
-exclude  env      HTTPS_PROXY
-```
+`*AUTH*`, or a URL with a password) are only passed when you pick them. Their values are never
+shown or stored, only a hash, so a change is still noticed.
 
 The confirmed plan is stored in `.go-yolo/plan`. The project image's tag
 (`go-yolo:<project>-<path hash>-<plan hash>`) includes a hash of the plan's build-time items, so
@@ -272,8 +306,9 @@ a change to them builds a new image; a change to `env` items only needs your con
 
 ### Go
 
-A project with a `go.mod` (or `go.work`) gets the host's Go, as the host's `go env` reports it
-(read with `GOTOOLCHAIN=local`, so reading it never downloads a toolchain):
+The setup offers the host's Go, as the host's `go env` reports it (read with
+`GOTOOLCHAIN=local`, so reading it never downloads a toolchain); a `go.mod` or `go.work`
+pre-selects it:
 
 | item | what | how |
 |------|------|-----|
@@ -292,13 +327,13 @@ work with `--net none`. `--parity` compares `go version`, `go env` and the tools
 
 ### Java
 
-A project with a `pom.xml`, `mvnw`, `build.gradle(.kts)`, `settings.gradle(.kts)` or `gradlew`
-gets the host's Java:
+The setup offers the host's Java; a `pom.xml`, `mvnw`, `build.gradle(.kts)`,
+`settings.gradle(.kts)` or `gradlew` pre-selects the JDKs and the matching caches and settings:
 
 | item | what | how |
 |------|------|-----|
-| `toolchain` | **every JDK the build could pick as a toolchain**: `/usr/lib/jvm/*`, SDKMAN, `~/.jdks` (IntelliJ), mise, asdf; for Gradle also its provisioned JDKs (`~/.gradle/jdks`) and `org.gradle.java.installations.paths`, for Maven `toolchains.xml`'s `jdkHome`s | apt packages for apt-installed JDKs (and links such as `default-java`), copies at the same path, owned as on the host, for the rest; the default `java` (`$JAVA_HOME`, else the one on `PATH`) first on `PATH` |
-| `toolchain` | Maven or Gradle, if the project has no wrapper | as `extra tool` does |
+| `toolchain` | **each JDK on the host**: `/usr/lib/jvm/*`, SDKMAN, `~/.jdks` (IntelliJ), mise, asdf, Gradle's provisioned JDKs (`~/.gradle/jdks`), `org.gradle.java.installations.paths`, `toolchains.xml`'s `jdkHome`s | apt packages for apt-installed JDKs (and links such as `default-java`), copies at the same path, owned as on the host, for the rest; the default `java` (`$JAVA_HOME`, else the one on `PATH`) first on `PATH` |
+| `toolchain` | Maven or Gradle, when they are on `PATH` (pre-selected if the project has no wrapper) | as an added host command |
 | `mount` | `~/.m2/settings.xml`, `toolchains.xml`; `GRADLE_USER_HOME`'s `gradle.properties`, `init.gradle(.kts)`, `init.d/` | read-only at the same path |
 | `cache` | the Maven local repository (`<localRepository>` or `~/.m2/repository`) and `~/.m2/wrapper`; Gradle's `caches/` and `wrapper/` | the project's Docker volumes, at the host's paths; they start empty, so the first build downloads the wrapper's distribution and the dependencies |
 | `env` | `JAVA_HOME`, `JAVA_OPTS`, `JAVA_TOOL_OPTIONS`, ...; for Maven `MAVEN_OPTS`, ...; for Gradle `GRADLE_OPTS`, `GRADLE_USER_HOME`, `ORG_GRADLE_PROJECT_*` (secrets filtered) | `docker run -e` |
@@ -406,12 +441,12 @@ ones, so the first mode given for a path wins. `GOYOLO_MOUNTS` can't hold paths 
 Your UID, GID, username, `$HOME` path and umask are the same as on the host, so files the agent
 creates belong to you and get the same permissions. `LANG`, `LANGUAGE`, `LC_ALL` and `LC_*` are
 passed too; their locales are generated in the project image (see [The plan](#the-plan)). If one
-is missing anyway (an excluded plan item), `LANG` falls back to `C.UTF-8` and an `LC_*` variable
+is missing anyway (a locale you didn't pick), `LANG` falls back to `C.UTF-8` and an `LC_*` variable
 is dropped.
 
 ### Other host commands
 
-`extra tool NAME` in `.go-yolo/config` brings any host command: its apt packages if apt installed
+A host command added in the setup (`tool NAME`) brings that command: its apt packages if apt installed
 it, otherwise its install directory (the `<dir>` of the `<dir>/bin/NAME` it resolves to, keeping
 an SDKMAN-style `current` link), copied into the image and put first on `PATH`. A command that is a
 plain file in a shared `bin/` (`~/bin/foo`) can't be copied on its own and is flagged in the plan.
@@ -551,7 +586,8 @@ too.
 | `lib/image.sh`      | image name, content hash and build                                 |
 | `lib/mounts.sh`     | mount safety checks; workdir, extra and git config mounts          |
 | `lib/project.sh`    | git repository root check, the `.go-yolo/` state directory         |
-| `lib/config.sh`     | `.go-yolo/config` parsing                                          |
+| `lib/config.sh`     | `.go-yolo/config`: the picks                                       |
+| `lib/setup.sh`      | the setup picker: candidates, suggestions, saving the picks        |
 | `lib/kinds.sh`      | the plan's item kinds and flags, each declared once                |
 | `lib/plan.sh`       | the plan model: adding, finding, sorting, hashing, saving items    |
 | `lib/apt.sh`        | apt versions and owners; apt package items                         |

@@ -161,7 +161,10 @@ plan_update_line() {
     fi
   done
   for key in "${!old[@]}"; do
-    if [[ -z ${new[$key]:-} ]]; then items+=("removed: ${key%%$'\t'*} ${key##*/}"); fi
+    if [[ -z ${new[$key]:-} ]]; then
+      name=${key#*$'\t'}
+      items+=("removed: ${key%%$'\t'*} ${name##*/}")
+    fi
   done
   if ((notes)); then items+=("$(count_of "$notes" note) changed"); fi
   if ((${#items[@]} > 4)); then more=$((${#items[@]} - 4)); items=("${items[@]:0:4}"); fi
@@ -206,21 +209,11 @@ show_plan_diff() {
   done
 }
 
-# Open .go-yolo/config in $VISUAL or $EDITOR (vi), starting it with a short guide if new.
+# Open .go-yolo/config in $VISUAL or $EDITOR (vi). (go-yolo.sh --setup is the picker for it.)
 edit_config() {
   local file
   file="$(config_file)"
-  if [[ ! -e $file ]]; then
-    cat >"$file" <<'EOF'
-# go-yolo settings for this project. One item per line:
-#
-#   extra    package  protobuf-compiler    also install this apt package
-#   extra    env      GITHUB_TOKEN         also pass this host environment variable
-#   exclude  package  libx11-dev           leave out an item the plan would include
-#   exclude  cert     /usr/local/share/ca-certificates/old.crt
-#   exclude  env      HTTPS_PROXY
-EOF
-  fi
+  if [[ ! -e $file ]]; then save_config "${CONFIG_ITEMS[@]}"; fi
   "${VISUAL:-${EDITOR:-vi}}" "$file" </dev/tty >/dev/tty
 }
 
@@ -248,10 +241,10 @@ confirm_plan() {
       note "the plan for this project changed since it was confirmed ($PLAN_CONFIRMED):"
       show_plan_diff
     elif ((PLAN_DETAILS)); then
-      note "plan for $PROJECT_DIR (new; edit .go-yolo/config to change it):"
+      note "plan for $PROJECT_DIR (new; go-yolo.sh --setup changes the picks):"
       show_plan
     else
-      note "plan for $PROJECT_DIR (new; edit .go-yolo/config to change it):"
+      note "plan for $PROJECT_DIR (new; go-yolo.sh --setup changes the picks):"
       show_plan_summary
     fi
 
@@ -267,7 +260,7 @@ confirm_plan() {
         y|yes) save_plan; return 0 ;;
         n|no|'') note "aborted; nothing was built"; exit 1 ;;
         p|plan) show_plan ;;
-        e|edit) edit_config; resolve_plan; break ;;
+        e|edit) edit_config; load_config; resolve_plan; break ;;
         d|dockerfile) project_dockerfile >&2 ;;
         *) note "y: build with this plan · n: stop · p: show every item · e: edit .go-yolo/config · d: show the Dockerfile" ;;
       esac

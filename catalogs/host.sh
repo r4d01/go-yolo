@@ -1,53 +1,74 @@
 # shellcheck shell=bash
-# The host catalog: what every project gets, whatever its languages.
+# The host catalog: what every project can get, whatever its languages.
 #
-#   base      the shared go-yolo base image (OS, agents, entrypoint)
-#   parity    base image packages whose version differs from the host's, as warnings: the
-#             base image installs the archive's current versions, and it never downgrades
-#   packages  the `extra package` items from .go-yolo/config, at the host's versions
-#   extras    `extra tool NAME` (a host command's install) and `extra mount PATH` (read-only)
-#             (language catalogs add the packages a project's native code needs)
-#   certs     extra CA certificates trusted by the host (/usr/local/share/ca-certificates)
-#   locales   the locales of LANG, LC_ALL and LC_* (with the locales package to generate them)
-#   env       the host's time zone and proxy settings; plus `extra env` items
+#   base      the shared go-yolo base image (OS, agents, entrypoint): always
+#   parity    base image packages whose version differs from the host's, as warnings: always
+#   cert      extra CA certificates trusted by the host (/usr/local/share/ca-certificates)
+#   locale    the locales of LANG, LC_ALL and LC_* (with the locales package to generate them)
+#   tz        the host's time zone (TZ)
+#   env       the host's proxy settings; any host variable added by name
+#   package   apt packages added by name, at the host's versions
+#   tool      host commands added by name (their install directory, or their apt packages)
+#   mount     host paths added by name, read-only
+
+HOST_PROXY_VARS=(HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY
+                 http_proxy https_proxy ftp_proxy all_proxy no_proxy)
 
 host_detect() { return 0; }
 
+# Candidates for the setup picker (see lib/setup.sh): "mode kind id hint name description".
+host_discover() {
+  local cert name zone
+  while IFS= read -r -d '' cert; do
+    printf 'image\tcert\t%s\t1\t%s\tCA certificate %s\n' "$cert" "$cert" "${cert##*/}"
+  done < <(find "${GOYOLO_CA_DIR:-/usr/local/share/ca-certificates}" -name '*.crt' -type f -print0 2>/dev/null | sort -z)
+  while IFS= read -r name; do
+    printf 'image\tlocale\t%s\t1\t%s\tlocale %s (generated in the image)\n' "$name" "$name" "$name"
+  done < <(host_locales)
+  if zone="$(host_timezone)"; then printf 'env\ttz\t-\t1\tTZ\ttime zone %s\n' "$zone"; fi
+  for name in "${HOST_PROXY_VARS[@]}"; do
+    [[ -n ${!name:-} ]] || continue
+    if looks_secret "$name" "${!name}"; then
+      printf 'env\tenv\t%s\t0\t%s\t%s (⚠ looks like a secret: its value is never shown)\n' "$name" "$name" "$name"
+    else
+      printf 'env\tenv\t%s\t1\t%s\t%s=%s\n' "$name" "$name" "$name" "${!name}"
+    fi
+  done
+}
+
 host_resolve() {
-  local cert name locales
+  local cert name locales=()
   plan_add base host image "$BASE_TAG"
   plan_base_parity
+  if [[ -n ${GOYOLO_TOOLS:-} ]]; then
+    warn "GOYOLO_TOOLS is no longer used; add host commands in go-yolo.sh --setup (Java, Maven and Gradle come with the java items)"
+  fi
 
   # shellcheck disable=SC2046 # one word per package name
-  plan_packages extra $(config_extras package)
-  if [[ -n ${GOYOLO_TOOLS:-} ]]; then
-    warn "GOYOLO_TOOLS is no longer used; list host commands as 'extra tool NAME' in .go-yolo/config (Java, Maven and Gradle come with the java items)"
-  fi
-  while IFS= read -r name; do plan_tool extra "$name"; done < <(config_extras tool)
-  while IFS= read -r name; do plan_mount extra "$name"; done < <(config_extras mount)
+  plan_packages extra $(picked_ids host package)
+  while IFS= read -r name; do plan_tool extra "$name"; done < <(picked_ids host tool)
+  while IFS= read -r name; do
+    if [[ -e $name ]]; then plan_mount extra "$name"; else plan_add mount extra skip "$name" - gone; fi
+  done < <(picked_ids host mount)
 
-  while IFS= read -r -d '' cert; do
-    plan_cert "$cert"
-  done < <(find "${GOYOLO_CA_DIR:-/usr/local/share/ca-certificates}" -name '*.crt' -type f -print0 2>/dev/null | sort -z)
+  while IFS= read -r cert; do
+    if [[ -f $cert ]]; then plan_cert "$cert"; else plan_add cert host skip "$cert" - gone; fi
+  done < <(picked_ids host cert)
 
-  mapfile -t locales < <(host_locales)
+  mapfile -t locales < <(picked_ids host locale)
   if ((${#locales[@]})); then
     plan_packages host locales
     for name in "${locales[@]}"; do plan_locale "$name"; done
   fi
 
-  if name="$(host_timezone)"; then plan_env host TZ "$name"; fi
-  for name in HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY \
-              http_proxy https_proxy ftp_proxy all_proxy no_proxy; do
-    plan_env host "$name"
-  done
+  if picked host tz - && name="$(host_timezone)"; then plan_env host TZ "$name"; fi
   while IFS= read -r name; do
-    plan_env extra "$name"
-  done < <(config_extras env)
+    if [[ " ${HOST_PROXY_VARS[*]} " == *" $name "* ]]; then plan_env host "$name"; else plan_env extra "$name"; fi
+  done < <(picked_ids host env)
 }
 
-# Warn about base image packages whose version differs from the host's. Until the base image
-# exists there is nothing to compare; go-yolo resolves the plan again once it is built.
+# Warn about base image packages whose version differs from the host's (go-yolo builds the base
+# image before it resolves the plan, so there is something to compare).
 plan_base_parity() {
   local name version host_version
   local -A host=()

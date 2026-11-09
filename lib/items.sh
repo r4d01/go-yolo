@@ -1,15 +1,11 @@
 # shellcheck shell=bash
-# The helpers catalogs (catalogs/*.sh) use to add items to the plan. Each checks
-# .go-yolo/config's exclude lines, the safety rules, and what the plan already has.
+# The helpers catalogs (catalogs/*.sh) use to add items to the plan, for the items the setup
+# picked. Each checks the safety rules and what the plan already has.
 # (Apt packages: plan_packages in lib/apt.sh.)
 
 # plan_cert PATH — a CA certificate to add to the image's trust store, at the same path.
 plan_cert() {
   local path=$1
-  if config_has exclude cert "$path"; then
-    plan_add cert host skip "$path" - excluded
-    return 0
-  fi
   plan_add cert host copy "$path" "$(sha256sum <"$path" | cut -c1-8)"
 }
 
@@ -26,10 +22,6 @@ plan_copy() {
   fi
   if is_under "$PROJECT_DIR" "$real"; then
     die "refusing to copy $dir into the image: it contains the project"
-  fi
-  if config_has exclude "$kind" "$real"; then
-    plan_add "$kind" "$group" skip "$real" "$value" excluded
-    return 0
   fi
   if plan_has "$kind" "$real"; then return 0; fi
   if [[ $(stat -c %u -- "$real") == "$HOST_UID" ]]; then flags=user-owned; fi
@@ -50,10 +42,6 @@ dir_fingerprint() {
 plan_mount() {
   local group=$1 path=$2 flags=${3:--} value=-
   if plan_has mount "$path"; then return 0; fi
-  if config_has exclude mount "$path"; then
-    plan_add mount "$group" skip "$path" - excluded
-    return 0
-  fi
   validate_mount_path "$path"
   if [[ -f $path ]]; then
     value="$(sha256sum <"$path" | cut -c1-8)"
@@ -70,10 +58,6 @@ plan_mount() {
 # read or written.
 plan_cache() {
   local group=$1 path=$2 name=$3
-  if config_has exclude cache "$path"; then
-    plan_add cache "$group" skip "$path" "$name" excluded
-    return 0
-  fi
   validate_mount_path "$path"
   plan_add cache "$group" volume "$path" "$name"
 }
@@ -116,9 +100,7 @@ plan_domain() {
 # comes from the host's list of supported locales; the `locales` package must be in the plan.
 plan_locale() {
   local name=$1 charmap
-  if config_has exclude locale "$name"; then
-    plan_add locale host skip "$name" - excluded
-  elif ! plan_items package apt | grep -qxF locales; then
+  if ! plan_items package apt | grep -qxF locales; then
     plan_add locale host skip "$name" - no-locales-package
   elif charmap="$(locale_charmap "$name")"; then
     plan_add locale host generate "$name" "$charmap"
@@ -146,29 +128,23 @@ looks_secret() {
   [[ $value =~ ://[^/@]*:[^/@]*@ ]]
 }
 
-# plan_env GROUP NAME [VALUE] — pass host variable NAME into the container. With VALUE (a value
-# go-yolo works out itself, e.g. the time zone), NAME=VALUE is passed instead. Looks-secret variables
-# are only passed when .go-yolo/config asks for them (extra env NAME); their values are never
-# shown or stored, only a hash, so a change is still noticed.
+# plan_env GROUP NAME [VALUE] — pass host variable NAME (one the setup picked) into the container.
+# With VALUE (a value go-yolo works out itself, e.g. the time zone), NAME=VALUE is passed
+# instead. The values of variables that look like secrets are never shown or stored, only a hash,
+# so a change is still noticed.
 plan_env() {
   local group=$1 name=$2 value
   if plan_has env "$name"; then return 0; fi
-  if config_has exclude env "$name"; then
-    plan_add env "$group" skip "$name" - excluded
-    return 0
-  fi
   if (($# >= 3)); then
     plan_add env "$group" env "$name" "${3:--}" derived
     return 0
   elif [[ ! -v $name ]]; then
-    if [[ $group == extra ]]; then plan_add env "$group" skip "$name" - not-set; fi
+    plan_add env "$group" skip "$name" - not-set
     return 0
   fi
   value=${!name}
 
-  if looks_secret "$name" "$value" && ! config_has extra env "$name"; then
-    plan_add env "$group" skip "$name" - secret
-  elif [[ -z $value ]]; then
+  if [[ -z $value ]]; then
     plan_add env "$group" env "$name" - empty
   elif looks_secret "$name" "$value" || [[ $value == *[$'\t\n']* ]]; then
     plan_add env "$group" env "$name" "sha256:$(printf '%s' "$value" | sha256sum | cut -c1-12)" hidden

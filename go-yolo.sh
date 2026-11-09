@@ -47,6 +47,8 @@ source "$REPO_DIR/lib/apt.sh"
 source "$REPO_DIR/lib/items.sh"
 # shellcheck source=lib/confirm.sh
 source "$REPO_DIR/lib/confirm.sh"
+# shellcheck source=lib/setup.sh
+source "$REPO_DIR/lib/setup.sh"
 # shellcheck source=lib/agent.sh
 source "$REPO_DIR/lib/agent.sh"
 # shellcheck source=lib/run.sh
@@ -69,6 +71,7 @@ choose_base_image
 mount_workdir              # the project directory; refuses $HOME and its parents
 check_project              # must be the git repository root
 ensure_state_dir           # .go-yolo/
+ensure_setup               # what the container gets: the picker on a first run or --setup
 
 # More mounts. Explicit ones come first: the first mode given for a path wins.
 add_user_mounts
@@ -81,6 +84,7 @@ add_agent_mounts
 if ((!DRY_RUN)); then ensure_base_image; fi
 resolve_plan               # what goes into the project image and the container
 confirm_plan               # asks if the plan is new or exposes more than the confirmed one
+if ((SETUP_ONLY)); then exit 0; fi
 choose_project_image
 add_plan_mounts            # the plan's cache volumes and read-only mounts
 if ((PARITY)); then prepare_parity; fi   # probes instead of an agent

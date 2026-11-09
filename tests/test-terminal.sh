@@ -8,7 +8,7 @@ if command -v script >/dev/null 2>&1; then
   tmux_env() {
     local cmd
     printf -v cmd '%q ' "$@"
-    TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null \
+    TEST_CMD=$cmd timeout 60 script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null \
       | tr -d '\r' | grep -oE '^GOYOLO_TMUX=[01]$'
   }
   run_tty() {
@@ -34,7 +34,7 @@ if command -v script >/dev/null 2>&1; then
     printf -v cmd '%q ' env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" "$@" \
       GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" \
       "$REPO_DIR/go-yolo.sh" --dry-run --mount /etc/passwd shell
-    (cd "$TEST_HOME/project" && TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null | tr -d '\r') || true
+    (cd "$TEST_HOME/project" && TEST_CMD=$cmd timeout 60 script -qec 'bash -c "$TEST_CMD"' /dev/null </dev/null | tr -d '\r') || true
   }
   [[ $(tty_error TERM=xterm) == *$'\e[31mgo-yolo: error:'* ]] || fail 'error on a terminal was not red'
   [[ $(tty_error TERM=xterm NO_COLOR=1) != *$'\e['* ]] || fail 'NO_COLOR did not turn colors off'

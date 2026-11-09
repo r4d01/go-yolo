@@ -326,14 +326,20 @@ Done when: all tests pass (with the cache tests rewritten for volumes) and the p
 fixtures are identical apart from the cache and seed items; a Go and a Gradle project build with
 their caches in volumes, a second run reuses them, and nothing on the host is read or written.
 
-### 4.3 Phase B: selection (D17, D20)
+### 4.3 Phase B: selection (D17, D20) — done except the exclude-from-prompt
 
 - `lib/config.sh`: the selection format (3.4), replacing `extra`/`exclude`. A part-1 config is
-  converted once (each `extra` becomes a picked item, each `exclude` an unpicked one).
-- `lib/setup.sh`: the picker (3.8) with fzf and a numbered-list fallback; `--setup`.
+  converted once (each `extra` becomes a picked item, each `exclude` an unpicked one). — done;
+  the old file is kept as `config.old`.
+- `lib/setup.sh`: the picker (3.8) with fzf and a numbered-list fallback; `--setup`. — done:
+  fzf with the current picks pre-toggled (`start:pos(N)+toggle`), the numbered list when fzf
+  is missing or too old; items added by name (`package`, `tool`, `mount`, `env`); without a
+  terminal `--yes` takes the suggestions and a dry run previews them.
 - Catalogs gain `<name>_discover`; resolution runs only for picked items. The part-1 detection
   (marker-based resolution, cgo scanning, `go.work` parsing, the Gradle-vs-Maven JDK scoping)
-  becomes discovery plus one-off hints, or goes away.
+  becomes discovery plus one-off hints, or goes away. — done: `_detect` is only a hint; the cgo
+  `pkg-config` scan and the Gradle-vs-Maven scoping are gone (every JDK is offered); a picked
+  item the host lacks is a `gone` warning.
 - Quieter confirmation (D20): ask only on selection or exposure changes; summary by default,
   `--plan` for details; exclude a ⚠ item from the prompt; the base image built without asking.
   — done except the exclude-from-prompt (B3): an item counts as new exposure if it wasn't in the

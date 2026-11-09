@@ -22,22 +22,40 @@ git -C "$TEST_HOME/project" init -q
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$*"; }
+# launch_command ARGS... — set LAUNCH_COMMAND to the go-yolo command a test runs: a clean
+# environment (env -i) pointing at the stubs, plus TEST_ENV.
+launch_command() {
+  LAUNCH_COMMAND=(env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin"
+    GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1
+    GOPROXY=https://proxy.example.com,direct GOYOLO_JVM_DIR="$TEST_DIR/jvm"
+    GOYOLO_MOUNTS="${TEST_MOUNTS-}" GRADLE_USER_HOME="${TEST_GRADLE_HOME-$TEST_HOME/.gradle}"
+    JAVA_HOME="${TEST_JAVA_HOME-}" GOROOT="${TEST_GOROOT-$TEST_HOME/toolchain}"
+    GOPATH="${TEST_GOPATH-$TEST_HOME/go}" GOCACHE="${TEST_GOCACHE-$TEST_HOME/cache}"
+    GOMODCACHE="${TEST_GOMODCACHE-$TEST_HOME/go/pkg/mod}" GOENV=off
+    DOCKER_TEST_LOG="$TEST_DIR/docker.log" DOCKER_TEST_IMAGE_STATUS="${TEST_IMAGE_STATUS-0}"
+    TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$TEST_DIR/apt-policy"
+    DPKG_HOST_FIXTURE="${TEST_DPKG_HOST-}" DPKG_BASE_FIXTURE="$REPO_DIR/tests/fixtures/dpkg-base"
+    DPKG_S_FIXTURE="$TEST_DIR/dpkg-S" PC_PATH_FIXTURE="$TEST_DIR/pc"
+    DOCKER_TEST_IMAGES="$TEST_DIR/images" DOCKER_TEST_VOLUMES="$TEST_DIR/volumes"
+    GOYOLO_LOCALES_SUPPORTED="$REPO_DIR/tests/fixtures/locales-supported"
+    "${TEST_ENV[@]}" "$REPO_DIR/go-yolo.sh" "$@")
+}
 launch() (
   cd "${LAUNCH_DIR:-$TEST_HOME/project}"
-  env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" \
-    GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1 \
-    GOPROXY=https://proxy.example.com,direct GOYOLO_JVM_DIR="$TEST_DIR/jvm" \
-    GOYOLO_MOUNTS="${TEST_MOUNTS-}" GRADLE_USER_HOME="${TEST_GRADLE_HOME-$TEST_HOME/.gradle}" \
-    JAVA_HOME="${TEST_JAVA_HOME-}" GOROOT="${TEST_GOROOT-$TEST_HOME/toolchain}" \
-    GOPATH="${TEST_GOPATH-$TEST_HOME/go}" GOCACHE="${TEST_GOCACHE-$TEST_HOME/cache}" \
-    GOMODCACHE="${TEST_GOMODCACHE-$TEST_HOME/go/pkg/mod}" GOENV=off \
-    DOCKER_TEST_LOG="$TEST_DIR/docker.log" DOCKER_TEST_IMAGE_STATUS="${TEST_IMAGE_STATUS-0}" \
-    TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$TEST_DIR/apt-policy" \
-    DPKG_HOST_FIXTURE="${TEST_DPKG_HOST-}" DPKG_BASE_FIXTURE="$REPO_DIR/tests/fixtures/dpkg-base" \
-    DPKG_S_FIXTURE="$TEST_DIR/dpkg-S" PC_PATH_FIXTURE="$TEST_DIR/pc" \
-    DOCKER_TEST_IMAGES="$TEST_DIR/images" DOCKER_TEST_VOLUMES="$TEST_DIR/volumes" GOYOLO_LOCALES_SUPPORTED="$REPO_DIR/tests/fixtures/locales-supported" \
-    "${TEST_ENV[@]}" "$REPO_DIR/go-yolo.sh" "$@"
+  launch_command "$@"
+  "${LAUNCH_COMMAND[@]}"
 )
+# in_terminal ANSWER... -- ARGS... — launch go-yolo ARGS in a terminal (script(1)), typing the
+# ANSWERs (one line each); print what it shows. Gives up after 60 seconds.
+in_terminal() {
+  local answers=() command
+  while (($#)) && [[ $1 != -- ]]; do answers+=("$1"); shift; done
+  shift
+  launch_command "$@"
+  printf -v command '%q ' "${LAUNCH_COMMAND[@]}"
+  (cd "${LAUNCH_DIR:-$TEST_HOME/project}" && printf '%s\n' "${answers[@]}" \
+     | TEST_CMD=$command timeout 60 script -qec 'bash -c "$TEST_CMD"' /dev/null) | tr -d '\r' || true
+}
 TEST_ENV=()   # extra VAR=value settings for launch
 reject() {
   local output

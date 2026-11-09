@@ -58,6 +58,64 @@ ui_pick_many() {
   done
 }
 
+# ui_pick_list PROMPT SELECTED ITEM... — let the user pick any of the ITEMs, starting with the
+# ones whose index (0-based) is in the space-separated SELECTED list; print the indexes of the
+# picked items, one per line. fzf if it is installed (TAB toggles), otherwise a numbered list
+# to toggle by number. Fails if the user cancels (Esc in fzf). Needs a terminal.
+ui_pick_list() {
+  local prompt=$1 selected=" $2 " i answer bind="" status picked token from to
+  shift 2
+  local items=("$@") on=() lines=()
+  for i in "${!items[@]}"; do
+    on[i]=0
+    if [[ $selected == *" $i "* ]]; then on[i]=1; fi
+    lines+=("$i"$'\t'"${items[i]}")
+  done
+
+  if command -v fzf >/dev/null 2>&1; then
+    # Start with the selected items toggled: "start:pos(2)+toggle+pos(5)+toggle+first".
+    for i in "${!items[@]}"; do
+      if ((on[i])); then bind+="pos($((i + 1)))+toggle+"; fi
+    done
+    status=0
+    picked="$(printf '%s\n' "${lines[@]}" \
+      | fzf --multi --reverse --height=80% --prompt="$prompt " --delimiter=$'\t' --with-nth=2.. \
+          --header='TAB: pick/unpick · Enter: done · Esc: cancel' --bind "start:${bind}first")" || status=$?
+    case $status in
+      0) cut -f1 <<<"$picked"; return 0 ;;
+      1) return 0 ;;       # nothing picked
+      130) return 1 ;;     # Esc
+    esac
+    # Any other status: this fzf can't do it (too old for "start"); use the list below.
+  fi
+
+  while true; do
+    for i in "${!items[@]}"; do
+      if ((on[i])); then printf '  [x] %2d  %s\n' $((i + 1)) "${items[i]}" >&2
+      else printf '  [ ] %2d  %s\n' $((i + 1)) "${items[i]}" >&2; fi
+    done
+    read -r -p "$prompt toggle numbers (e.g. 3 5-7), a: all, n: none, Enter: done: " answer
+    [[ -n $answer ]] || break
+    for token in $answer; do
+      case $token in
+        a) for i in "${!items[@]}"; do on[i]=1; done ;;
+        n) for i in "${!items[@]}"; do on[i]=0; done ;;
+        *-*) from=${token%-*} to=${token#*-} ;;
+        *) from=$token to=$token ;;
+      esac
+      [[ $token == a || $token == n ]] && continue
+      if [[ $from =~ ^[0-9]+$ && $to =~ ^[0-9]+$ ]]; then
+        for ((i = from - 1; i < to && i < ${#items[@]}; i++)); do
+          if ((i >= 0)); then on[i]=$((1 - on[i])); fi
+        done
+      fi
+    done
+  done
+  for i in "${!items[@]}"; do
+    if ((on[i])); then printf '%s\n' "$i"; fi
+  done
+}
+
 die() {
   printf '%s %s\n' "$(ui_paint red 'go-yolo: error:')" "$*" >&2
   exit 1

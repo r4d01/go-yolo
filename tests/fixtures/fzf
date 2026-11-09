@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 # Stub fzf: "picks" the input lines that contain $FZF_TEST_PICK.
 set -euo pipefail
+# FZF_TEST_OLD=1 acts like an fzf too old for the setup picker: an error (status 2).
+if [[ -n ${FZF_TEST_OLD:-} ]]; then printf 'unknown action: start\n' >&2; exit 2; fi
 grep -F -- "${FZF_TEST_PICK:?}" || true

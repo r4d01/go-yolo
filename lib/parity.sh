@@ -5,12 +5,13 @@
 # The probes and the plan are copied into the container as text (declare -f / declare -p), so
 # both sides run exactly the same code. --parity exits with 1 if anything differs.
 
-# The probe script: the plan, the probes of the catalogs this project uses, and a call to each.
+# The probe script: the plan, the probes of the catalogs this project has picks from (and the
+# host catalog's), and a call to each.
 parity_script() {
   local catalog
   declare -p PLAN
   for catalog in "${CATALOGS[@]}"; do
-    if declare -F "${catalog}_probe" >/dev/null && "${catalog}_detect"; then
+    if declare -F "${catalog}_probe" >/dev/null && { [[ $catalog == host ]] || catalog_picked "$catalog"; }; then
       declare -f "${catalog}_probe"
       printf '%s_probe\n' "$catalog"
     fi

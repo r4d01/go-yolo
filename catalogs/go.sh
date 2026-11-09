@@ -1,63 +1,111 @@
 # shellcheck shell=bash
-# The Go catalog, for projects with a go.mod or go.work: the host's Go, as the host has it.
+# The Go catalog: the host's Go, as the host has it.
 #
-#   toolchain  GOROOT, copied into the image at the same path (or its apt packages)
+#   toolchain  GOROOT, copied into the image at the same path (or its apt packages); with it the
+#              settings the container needs (GOPATH, GOMODCACHE, GOCACHE, GOENV, ...) and the
+#              GOPROXY and GOSUMDB hosts for --net allowlist
 #   tools      GOBIN, or the first GOPATH entry's bin/: your `go install`ed tools, owned by you
-#   package    the apt packages behind the project's `#cgo pkg-config:` names, and pkg-config
+#   cache      GOMODCACHE (modules) and GOCACHE (build) at the host's paths, in the project's
+#              volumes go-mod and go-build (they start empty: the host's caches are never shared)
 #   mount      the GOENV file (`go env -w` settings); a go.work outside the repository, and the
 #              modules it uses outside the repository (read-only)
-#   cache      GOMODCACHE and GOCACHE at the host's paths, in the project's volumes go-mod and
-#              go-build (they start empty: the host's own caches are never shared)
-#   env        GOPATH, GOBIN, GOMODCACHE, GOCACHE and GOENV as the host has them; the Go
-#              variables set in the host's environment
-#   domain     the GOPROXY and GOSUMDB hosts, for --net allowlist
+#   env        the Go variables set in the host's environment
 #
-# The host's own GOPATH, module cache and build cache are never read or written. The host's settings
-# are read with GOTOOLCHAIN=local: just reading them must not make the host download a newer
-# toolchain that a go.mod asks for.
+# The host's own GOPATH, module cache and build cache are never read or written. The host's
+# settings are read with GOTOOLCHAIN=local: just reading them must not make the host download a
+# newer toolchain that a go.mod asks for.
 
+# The Go variables offered from the host's environment.
+GO_ENV_NAMES=(GOPROXY GOFLAGS GOPRIVATE GONOPROXY GONOSUMDB GOSUMDB GOINSECURE GOTOOLCHAIN
+              GOEXPERIMENT GODEBUG GOOS GOARCH GOAMD64 GOARM GOARM64 GO386 CGO_ENABLED CC CXX
+              CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS PKG_CONFIG PKG_CONFIG_PATH)
+declare -A GO_SETTINGS=()
+
+# A hint for the setup picker: a Go project has a go.mod or go.work.
 go_detect() { [[ -f go.mod || -f go.work ]]; }
 
+# Read the host's Go settings into GO_SETTINGS (GOROOT, GOVERSION, ...; GOBIN made explicit).
+go_settings() {
+  local names=(GOROOT GOVERSION GOPATH GOBIN GOMODCACHE GOCACHE GOENV GOWORK GOPROXY GOSUMDB)
+  local values=() i
+  mapfile -t values < <(GOTOOLCHAIN=local go env "${names[@]}")
+  for i in "${!names[@]}"; do GO_SETTINGS[${names[i]}]=${values[i]:-}; done
+  # Tools go to GOBIN, or bin/ of the first GOPATH entry, as `go install` would use.
+  GO_SETTINGS[tools]=${GO_SETTINGS[GOBIN]:-${GO_SETTINGS[GOPATH]%%:*}/bin}
+}
+
+# Candidates for the setup picker (see lib/setup.sh): "mode kind id hint name description".
+go_discover() {
+  local hint=0 name tools gowork
+  command -v go >/dev/null 2>&1 || return 0
+  go_settings
+  if go_detect; then hint=1; fi
+  printf 'image\ttoolchain\t-\t%s\t%s\tGo %s (%s)\n' "$hint" "${GO_SETTINGS[GOROOT]}" "${GO_SETTINGS[GOVERSION]}" "${GO_SETTINGS[GOROOT]}"
+  tools=${GO_SETTINGS[tools]}
+  if [[ -d $tools ]]; then
+    printf 'image\ttools\t-\t%s\t%s\ttools in %s: %s\n' "$hint" "$tools" "$tools" \
+      "$(find "$tools" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')"
+  fi
+  printf 'cache\tcache\tmodules\t%s\t%s\tmodule cache (a project volume at %s)\n' "$hint" "${GO_SETTINGS[GOMODCACHE]}" "${GO_SETTINGS[GOMODCACHE]}"
+  if [[ ${GO_SETTINGS[GOCACHE]} != off ]]; then
+    printf 'cache\tcache\tbuild\t%s\t%s\tbuild cache (a project volume at %s)\n' "$hint" "${GO_SETTINGS[GOCACHE]}" "${GO_SETTINGS[GOCACHE]}"
+  fi
+  if [[ -f ${GO_SETTINGS[GOENV]} ]]; then
+    printf 'mount\tmount\tgoenv\t%s\t%s\tgo env -w settings: %s (read-only)\n' "$hint" "${GO_SETTINGS[GOENV]}" "${GO_SETTINGS[GOENV]}"
+  fi
+  gowork=${GO_SETTINGS[GOWORK]}
+  if [[ -n $gowork && $gowork != off ]] && ! is_under "$gowork" "$PROJECT_DIR"; then
+    printf 'mount\tmount\tgowork\t%s\t%s\t⚠ go.work outside the repository: %s, with the modules it uses (read-only)\n' "$hint" "$gowork" "$gowork"
+  fi
+  for name in "${GO_ENV_NAMES[@]}"; do
+    [[ -n ${!name:-} ]] || continue
+    if looks_secret "$name" "${!name}"; then
+      printf 'env\tenv\t%s\t0\t%s\t%s (⚠ looks like a secret: its value is never shown)\n' "$name" "$name" "$name"
+    else
+      printf 'env\tenv\t%s\t%s\t%s\t%s=%s\n' "$name" "$hint" "$name" "$name" "${!name}"
+    fi
+  done
+}
+
 go_resolve() {
-  local values goroot version gopath gobin gomodcache gocache goenv gowork goproxy gosumdb name
+  local name gowork
+  catalog_picked go || return 0
   if [[ -n ${GOYOLO_GOPATH_MODE+set} ]]; then
     warn "GOYOLO_GOPATH_MODE is no longer used: GOPATH isn't mounted any more (see the go items in the plan)"
   fi
   if ! command -v go >/dev/null 2>&1; then
-    warn "this project uses Go, but go isn't on PATH: the container gets no Go either"
+    warn "Go items are picked, but go isn't on PATH: the container gets no Go either"
+    plan_add toolchain go skip go - gone
     return 0
   fi
+  go_settings
 
-  mapfile -t values < <(GOTOOLCHAIN=local go env GOROOT GOVERSION GOPATH GOBIN GOMODCACHE GOCACHE \
-                          GOENV GOWORK GOPROXY GOSUMDB)
-  goroot=${values[0]} version=${values[1]} gopath=${values[2]} gobin=${values[3]}
-  gomodcache=${values[4]} gocache=${values[5]} goenv=${values[6]} gowork=${values[7]}
-  goproxy=${values[8]} gosumdb=${values[9]}
-
-  go_plan_toolchain "$goroot" "$version"
-  # Tools: GOBIN, or bin/ of the first GOPATH entry, as `go install` would use.
-  if [[ -z $gobin ]]; then gobin="${gopath%%:*}/bin"; fi
-  if [[ -d $gobin ]]; then plan_copy tools go "$gobin" "$(dir_fingerprint "$gobin")"; fi
-  go_plan_cgo_packages
-
-  if [[ -f $goenv ]]; then plan_mount go "$goenv"; fi
-  if [[ -n $gowork && $gowork != off ]]; then go_plan_workspace "$gowork"; fi
-
-  plan_cache go "$gomodcache" go-mod
-  if [[ $gocache != off ]]; then plan_cache go "$gocache" go-build; fi
-
-  plan_env go GOPATH "$gopath"
-  if [[ -n ${values[3]} ]]; then plan_env go GOBIN "$gobin"; fi
-  plan_env go GOMODCACHE "$gomodcache"
-  plan_env go GOCACHE "$gocache"
-  plan_env go GOENV "$goenv"
-  for name in GOPROXY GOFLAGS GOPRIVATE GONOPROXY GONOSUMDB GOSUMDB GOINSECURE GOTOOLCHAIN GOEXPERIMENT \
-              GODEBUG GOOS GOARCH GOAMD64 GOARM GOARM64 GO386 CGO_ENABLED CC CXX \
-              CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS PKG_CONFIG PKG_CONFIG_PATH; do
-    plan_env go "$name"
-  done
-
-  go_plan_domains "$goproxy" "$gosumdb"
+  if picked go toolchain -; then
+    go_plan_toolchain "${GO_SETTINGS[GOROOT]}" "${GO_SETTINGS[GOVERSION]}"
+    plan_env go GOPATH "${GO_SETTINGS[GOPATH]}"
+    if [[ -n ${GO_SETTINGS[GOBIN]} ]]; then plan_env go GOBIN "${GO_SETTINGS[GOBIN]}"; fi
+    plan_env go GOMODCACHE "${GO_SETTINGS[GOMODCACHE]}"
+    plan_env go GOCACHE "${GO_SETTINGS[GOCACHE]}"
+    plan_env go GOENV "${GO_SETTINGS[GOENV]}"
+    go_plan_domains "${GO_SETTINGS[GOPROXY]}" "${GO_SETTINGS[GOSUMDB]}"
+  fi
+  if picked go tools -; then
+    if [[ -d ${GO_SETTINGS[tools]} ]]; then
+      plan_copy tools go "${GO_SETTINGS[tools]}" "$(dir_fingerprint "${GO_SETTINGS[tools]}")"
+    else
+      plan_add tools go skip "${GO_SETTINGS[tools]}" - gone
+    fi
+  fi
+  if picked go cache modules; then plan_cache go "${GO_SETTINGS[GOMODCACHE]}" go-mod; fi
+  if picked go cache build && [[ ${GO_SETTINGS[GOCACHE]} != off ]]; then plan_cache go "${GO_SETTINGS[GOCACHE]}" go-build; fi
+  if picked go mount goenv; then
+    if [[ -f ${GO_SETTINGS[GOENV]} ]]; then plan_mount go "${GO_SETTINGS[GOENV]}"; else plan_add mount go skip goenv - gone; fi
+  fi
+  gowork=${GO_SETTINGS[GOWORK]}
+  if picked go mount gowork; then
+    if [[ -n $gowork && $gowork != off ]]; then go_plan_workspace "$gowork"; else plan_add mount go skip go.work - gone; fi
+  fi
+  while IFS= read -r name; do plan_env go "$name"; done < <(picked_ids go env)
 }
 
 # The toolchain: from apt if GOROOT belongs to apt packages (e.g. /usr/lib/go-1.24), else a copy.
@@ -70,32 +118,6 @@ go_plan_toolchain() {
   else
     plan_copy toolchain go "$goroot" "$version" on-path
   fi
-}
-
-# The apt packages that provide the project's `#cgo pkg-config: NAME` libraries (the package
-# that owns NAME.pc on the host), plus pkg-config itself. Without pkg-config on the host the
-# host can't build such code either, so nothing is added.
-go_plan_cgo_packages() {
-  local names=() name dir packages=() owner
-  command -v pkg-config >/dev/null 2>&1 || return 0
-  # Lines like "// #cgo pkg-config: sqlite3 libpng" or "#cgo linux pkg-config: --static foo".
-  mapfile -t names < <(grep -rhoE --include='*.go' --exclude-dir=.git --exclude-dir=.go-yolo \
-                         '^[[:space:]]*(//[[:space:]]*)?#cgo( [^:]*)? pkg-config:.*' . 2>/dev/null \
-                       | sed 's/^.*pkg-config: *//' | tr ' ' '\n' | grep -v -e '^-' -e '^$' | sort -u)
-  ((${#names[@]})) || return 0
-
-  for name in "${names[@]}"; do
-    for dir in $(pkg-config --variable pc_path pkg-config | tr : ' '); do
-      [[ -f $dir/$name.pc ]] || continue
-      if owner="$(dpkg -S -- "$dir/$name.pc" 2>/dev/null)"; then packages+=("${owner%%: *}"); fi
-      break
-    done
-  done
-  if owner="$(dpkg -S -- "$(readlink -f "$(command -v pkg-config)")" 2>/dev/null)"; then
-    packages+=("${owner%%: *}")
-  fi
-  # shellcheck disable=SC2046 # one word per package name
-  plan_packages go $(printf '%s\n' "${packages[@]}" | sort -u)
 }
 
 # A go.work outside the repository (e.g. ~/src/go.work) puts the host into workspace mode:

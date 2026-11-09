@@ -100,7 +100,8 @@ expect_plan 'env       MAVEN_ARGS=-ntp [java]'
 [[ $plan_text != *seed* ]] || fail "the host's Maven repository is still a seed"
 expect_plan 'domain    nexus.example.com [java]'
 expect_plan 'domain    maven.example.org [java]'
-[[ $plan_text != *'gradle'* ]] || fail 'a Maven project got Gradle items'
+[[ $plan_text != *'gradle-caches'* && $plan_text != *'gradle-wrapper'* && $plan_text != *gradle.properties* ]] \
+  || fail 'a Maven project got Gradle caches or settings'
 rm -rf -- "$STATE" "$JAVA_PROJECT"/{pom.xml,mvnw,.mvn} "$TEST_HOME/.m2" "$TEST_HOME/m2repo"
 TEST_ENV=()
 pass "Java: Maven's settings, local repository (as a project volume) and repository hosts are planned"

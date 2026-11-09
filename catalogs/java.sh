@@ -1,25 +1,31 @@
 # shellcheck shell=bash
-# The Java catalog, for Maven and Gradle projects: the host's JDKs, build tools and settings.
+# The Java catalog: the host's JDKs, Maven, Gradle and their settings.
 #
-#   toolchain  every JDK the host's Gradle or Maven could pick as a toolchain: apt packages for
-#              apt-installed ones, copies (owned as on the host) for the rest; the default `java`
-#              first on PATH. Maven or Gradle themselves, if the project has no wrapper.
-#   link       symlinks to them (SDKMAN's current, /usr/lib/jvm/default-java, ...)
-#   mount      ~/.m2/settings.xml and toolchains.xml, GRADLE_USER_HOME's gradle.properties and
-#              init scripts: read-only
-#   cache      the Maven local repository and wrapper, Gradle's caches and wrapper: at the host's
-#              paths, in the project's volumes (they start empty)
-#   env        Java, Maven and Gradle variables set on the host
-#   domain     Maven Central and the Gradle services; the hosts in settings.xml and the wrappers
+#   jdk     each JDK on the host (/usr/lib/jvm, SDKMAN, ~/.jdks, Gradle's provisioned JDKs, mise,
+#           asdf, org.gradle.java.installations.paths, toolchains.xml): apt packages for
+#           apt-installed ones, copies (owned as on the host) for the rest; the default `java`
+#           first on PATH; symlinks to them (SDKMAN's current, default-java) kept
+#   tool    mvn and gradle, when they are on PATH (as `extra tool` does)
+#   mount   ~/.m2/settings.xml and toolchains.xml, GRADLE_USER_HOME's gradle.properties and
+#           init scripts: read-only
+#   cache   the Maven local repository and wrapper, Gradle's caches and wrapper: at the host's
+#           paths, in the project's volumes (they start empty)
+#   env     Java, Maven and Gradle variables set on the host
+# With Maven or Gradle items come their domains for --net allowlist (Maven Central, the Gradle
+# services, the hosts in settings.xml and the wrappers' download URLs).
 #
 # The host's ~/.m2 repository and Gradle caches are never read or written.
 
 JAVA_MAVEN_FILES=(pom.xml mvnw)
 JAVA_GRADLE_FILES=(build.gradle build.gradle.kts settings.gradle settings.gradle.kts gradlew)
+JAVA_ENV_NAMES=(JAVA_HOME JAVA_OPTS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS)
+JAVA_MAVEN_ENV_NAMES=(MAVEN_OPTS MAVEN_ARGS MAVEN_CONFIG M2_HOME MAVEN_HOME)
+JAVA_GRADLE_ENV_NAMES=(GRADLE_OPTS GRADLE_HOME GRADLE_USER_HOME)
 
+# A hint for the setup picker: a Maven or Gradle project.
 java_detect() { java_uses maven || java_uses gradle; }
 
-# java_uses maven|gradle — true if the project builds with it.
+# java_uses maven|gradle — true if the project builds with it (a hint for the setup picker).
 java_uses() {
   local file files
   if [[ $1 == maven ]]; then files=("${JAVA_MAVEN_FILES[@]}"); else files=("${JAVA_GRADLE_FILES[@]}"); fi
@@ -29,29 +35,110 @@ java_uses() {
   return 1
 }
 
-java_resolve() {
-  local gradle_home=${GRADLE_USER_HOME:-$HOME_DIR/.gradle} name
-  java_plan_jdks "$gradle_home"
-  if java_uses maven; then
-    if [[ ! -e mvnw ]]; then plan_tool java mvn; fi
-    java_plan_maven
-  fi
-  if java_uses gradle; then
-    if [[ ! -e gradlew ]]; then plan_tool java gradle; fi
-    java_plan_gradle "$gradle_home"
-  fi
+java_gradle_home() { printf '%s' "${GRADLE_USER_HOME:-$HOME_DIR/.gradle}"; }
 
-  for name in JAVA_HOME JAVA_OPTS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS; do
-    plan_env java "$name"
+# The Maven local repository: settings.xml's <localRepository>, else ~/.m2/repository.
+java_maven_repo() {
+  local repo
+  repo="$(sed -n 's:.*<localRepository>\(.*\)</localRepository>.*:\1:p' "$HOME_DIR/.m2/settings.xml" 2>/dev/null | head -n 1)"
+  # shellcheck disable=SC2016 # Maven's literal ${user.home} placeholder, not a shell expansion
+  repo=${repo//'${user.home}'/$HOME_DIR}
+  printf '%s' "${repo:-$HOME_DIR/.m2/repository}"
+}
+
+# The settings files go-yolo can mount, one "build tool<TAB>path" per line (those that exist).
+java_settings_files() {
+  local gradle_home file
+  gradle_home="$(java_gradle_home)"
+  for file in "$HOME_DIR/.m2/settings.xml" "$HOME_DIR/.m2/toolchains.xml"; do
+    if [[ -f $file ]]; then printf 'maven\t%s\n' "$file"; fi
   done
-  if java_uses maven; then
-    for name in MAVEN_OPTS MAVEN_ARGS MAVEN_CONFIG M2_HOME MAVEN_HOME; do plan_env java "$name"; done
+  for file in "$gradle_home/gradle.properties" "$gradle_home/init.gradle" "$gradle_home/init.gradle.kts" "$gradle_home/init.d"; do
+    if [[ -e $file ]]; then printf 'gradle\t%s\n' "$file"; fi
+  done
+}
+
+# The caches, one "build tool<TAB>id<TAB>path" per line.
+java_caches() {
+  local gradle_home
+  gradle_home="$(java_gradle_home)"
+  printf 'maven\tm2-repository\t%s\n' "$(java_maven_repo)"
+  printf 'maven\tm2-wrapper\t%s\n' "$HOME_DIR/.m2/wrapper"
+  printf 'gradle\tgradle-caches\t%s\n' "$gradle_home/caches"
+  printf 'gradle\tgradle-wrapper\t%s\n' "$gradle_home/wrapper"
+}
+
+# Candidates for the setup picker (see lib/setup.sh): "mode kind id hint name description".
+java_discover() {
+  local hint_java=0 hint=0 default="" dir real version name tool file cache path what
+  local -A tool_hint=([maven]=0 [gradle]=0)
+  if java_detect; then hint_java=1; fi
+  if java_uses maven; then tool_hint[maven]=1; fi
+  if java_uses gradle; then tool_hint[gradle]=1; fi
+  # Nothing to offer on a host without any Java, Maven or Gradle, unless the project uses them.
+  if ((!hint_java)) && [[ -z $(java_jdk_dirs) ]] && ! command -v mvn >/dev/null 2>&1 \
+     && ! command -v gradle >/dev/null 2>&1; then
+    return 0
   fi
-  if java_uses gradle; then
-    for name in GRADLE_OPTS GRADLE_HOME GRADLE_USER_HOME $(compgen -e | grep '^ORG_GRADLE_PROJECT_' || true); do
-      plan_env java "$name"
-    done
-  fi
+  default="$(java_default_home)" || default=""
+
+  while IFS= read -r dir; do
+    [[ ! -L $dir ]] || continue   # a symlink comes with the JDK it points to
+    real="$(realpath -- "$dir")"
+    version="$(sed -n 's/^JAVA_VERSION="\(.*\)"/\1/p' "$real/release" 2>/dev/null)"
+    what="JDK ${version:-?}"
+    if [[ $real == "$default" ]]; then what+=", your default java"; fi
+    if apt_owners "$real" >/dev/null; then what+=", from apt"; fi
+    printf 'image\tjdk\t%s\t%s\t%s\t%s (%s)\n' "$real" "$hint_java" "$real" "$what" "$real"
+  done < <(java_jdk_dirs)
+
+  for tool in mvn gradle; do
+    path="$(command -v "$tool" 2>/dev/null)" || continue
+    hint=0
+    if [[ $tool == mvn ]] && ((tool_hint[maven])) && [[ ! -e mvnw ]]; then hint=1; fi
+    if [[ $tool == gradle ]] && ((tool_hint[gradle])) && [[ ! -e gradlew ]]; then hint=1; fi
+    printf 'image\ttool\t%s\t%s\t%s\t%s (%s)\n' "$tool" "$hint" "$tool" "$tool" "$path"
+  done
+  while IFS=$'\t' read -r tool file; do
+    what="$file (read-only)"
+    if [[ -f $file ]] && grep -qiE 'password|passwd|secret|token|credential|_auth' -- "$file" 2>/dev/null; then
+      what+=" ⚠ may hold credentials"
+    fi
+    printf 'mount\tmount\t%s\t%s\t%s\t%s\n' "$file" "${tool_hint[$tool]}" "$file" "$what"
+  done < <(java_settings_files)
+  while IFS=$'\t' read -r tool cache path; do
+    printf 'cache\tcache\t%s\t%s\t%s\t%s (a project volume at %s)\n' "$cache" "${tool_hint[$tool]}" "$path" "$cache" "$path"
+  done < <(java_caches)
+
+  for name in "${JAVA_ENV_NAMES[@]}" "${JAVA_MAVEN_ENV_NAMES[@]}" "${JAVA_GRADLE_ENV_NAMES[@]}" \
+              $(compgen -e | grep '^ORG_GRADLE_PROJECT_' || true); do
+    [[ -n ${!name:-} ]] || continue
+    if looks_secret "$name" "${!name}"; then
+      printf 'env\tenv\t%s\t0\t%s\t%s (⚠ looks like a secret: its value is never shown)\n' "$name" "$name" "$name"
+    else
+      printf 'env\tenv\t%s\t%s\t%s\t%s=%s\n' "$name" "$hint_java" "$name" "$name" "${!name}"
+    fi
+  done
+}
+
+java_resolve() {
+  local name tool cache path maven=0 gradle=0
+  catalog_picked java || return 0
+  java_plan_jdks
+  while IFS= read -r name; do plan_tool java "$name"; done < <(picked_ids java tool)
+  while IFS= read -r name; do
+    if [[ -e $name ]]; then plan_mount java "$name"; else plan_add mount java skip "$name" - gone; fi
+  done < <(picked_ids java mount)
+  while IFS=$'\t' read -r tool cache path; do
+    if picked java cache "$cache"; then
+      plan_cache java "$path" "$cache"
+      if [[ $tool == maven ]]; then maven=1; else gradle=1; fi
+    fi
+  done < <(java_caches)
+  while IFS= read -r name; do plan_env java "$name"; done < <(picked_ids java env)
+
+  if ((maven)) || picked java tool mvn; then java_plan_maven_domains; fi
+  if ((gradle)) || picked java tool gradle; then java_plan_gradle_domains; fi
 }
 
 # The JDK the host's `java` is: $JAVA_HOME, else the java on PATH (Java 8: the JDK around jre/).
@@ -68,40 +155,34 @@ java_default_home() {
   printf '%s' "$home"
 }
 
-# Print every directory where the host's Gradle or Maven could find a JDK, one per line, the
-# default first: the usual install places; for Gradle its provisioned JDKs and
-# org.gradle.java.installations.paths, for Maven toolchains.xml. Only directories with a bin/java.
+# Print every directory where the host has a JDK, one per line, the default first: the usual
+# install places, Gradle's provisioned JDKs and org.gradle.java.installations.paths, and Maven's
+# toolchains.xml. Only directories with a bin/java.
 java_jdk_dirs() {
-  local gradle_home=$1 dir file
+  local gradle_home dir file
+  gradle_home="$(java_gradle_home)"
   {
     java_default_home || true
     printf '\n%s' "${JAVA_HOME:-}"
     printf '\n%s' "${GOYOLO_JVM_DIR:-/usr/lib/jvm}"/* "$HOME_DIR"/.sdkman/candidates/java/* "$HOME_DIR"/.jdks/* \
-      "$HOME_DIR"/.local/share/mise/installs/java/* "$HOME_DIR"/.asdf/installs/java/*
+      "$gradle_home"/jdks/* "$HOME_DIR"/.local/share/mise/installs/java/* "$HOME_DIR"/.asdf/installs/java/*
     printf '\n'
-    if java_uses gradle; then
-      printf '%s\n' "$gradle_home"/jdks/*
-      for file in "$gradle_home/gradle.properties" gradle.properties; do
-        # org.gradle.java.installations.paths=/opt/jdk17,/opt/jdk21
-        sed -n 's/^ *org\.gradle\.java\.installations\.paths *= *//p' "$file" 2>/dev/null | tr ',' '\n'
-      done
-    fi
-    if java_uses maven; then
-      sed -n 's:.*<jdkHome>\(.*\)</jdkHome>.*:\1:p' "$HOME_DIR/.m2/toolchains.xml" 2>/dev/null
-    fi
+    for file in "$gradle_home/gradle.properties" gradle.properties; do
+      # org.gradle.java.installations.paths=/opt/jdk17,/opt/jdk21
+      sed -n 's/^ *org\.gradle\.java\.installations\.paths *= *//p' "$file" 2>/dev/null | tr ',' '\n'
+    done
+    sed -n 's:.*<jdkHome>\(.*\)</jdkHome>.*:\1:p' "$HOME_DIR/.m2/toolchains.xml" 2>/dev/null
   } | while IFS= read -r dir; do
     if [[ -n $dir && -x $dir/bin/java ]]; then printf '%s\n' "$dir"; fi
   done | awk '!seen[$0]++'
 }
 
-# Plan every JDK: the real directories first, then the symlinks to them.
+# Plan the picked JDKs, then the symlinks on the host that point to them.
 java_plan_jdks() {
-  local gradle_home=$1 default="" dir real version flags owners
-  local links=()
+  local default="" dir real version flags owners
   default="$(java_default_home)" || default=""
-  while IFS= read -r dir; do
-    if [[ -L $dir ]]; then links+=("$dir"); continue; fi
-    real="$(realpath -- "$dir")"
+  while IFS= read -r real; do
+    if [[ ! -x $real/bin/java ]]; then plan_add toolchain java skip "$real" - gone; continue; fi
     version="$(sed -n 's/^JAVA_VERSION="\(.*\)"/\1/p' "$real/release" 2>/dev/null)"
     flags=-
     if [[ $real == "$default" ]]; then flags=on-path; fi
@@ -112,63 +193,36 @@ java_plan_jdks() {
     else
       plan_copy toolchain java "$real" "${version:--}" "$flags"
     fi
-  done < <(java_jdk_dirs "$gradle_home")
+  done < <(picked_ids java jdk)
 
-  # A link from an apt package (Debian's default-java) comes with that package.
-  for dir in "${links[@]}"; do
+  # A link from an apt package (Debian's default-java) comes with that package; other links to a
+  # picked JDK (SDKMAN's current) are recreated.
+  while IFS= read -r dir; do
+    if [[ ! -L $dir ]] || ! picked java jdk "$(realpath -- "$dir")"; then continue; fi
     if owners="$(apt_owners "$dir")"; then
       # shellcheck disable=SC2086
       plan_packages java $owners
     elif ! plan_has link "$dir"; then
-      java_plan_jdk_dir_of_link "$dir" "$default"
+      plan_add link java link "$dir" "$(realpath -- "$dir")"
     fi
-  done
+  done < <(java_jdk_dirs)
 }
 
-# A symlinked JDK that isn't from apt: plan its real directory (if not yet) and the link.
-java_plan_jdk_dir_of_link() {
-  local dir=$1 default=$2 real flags=-
-  real="$(realpath -- "$dir")"
-  if [[ $real == "$default" ]]; then flags=on-path; fi
-  plan_copy toolchain java "$dir" "$(sed -n 's/^JAVA_VERSION="\(.*\)"/\1/p' "$real/release" 2>/dev/null)" "$flags"
-  if ! plan_has link "$dir"; then plan_add link java link "$dir" "$real"; fi
-}
-
-java_plan_maven() {
-  local m2="$HOME_DIR/.m2" file repo
-  for file in settings.xml toolchains.xml; do
-    if [[ -f $m2/$file ]]; then plan_mount java "$m2/$file"; fi
-  done
-  # The local repository: settings.xml's <localRepository>, else ~/.m2/repository.
-  repo="$(sed -n 's:.*<localRepository>\(.*\)</localRepository>.*:\1:p' "$m2/settings.xml" 2>/dev/null | head -n 1)"
-  # shellcheck disable=SC2016 # Maven's literal ${user.home} placeholder, not a shell expansion
-  repo=${repo//'${user.home}'/$HOME_DIR}
-  repo=${repo:-$m2/repository}
-  plan_cache java "$repo" m2-repository
-  plan_cache java "$m2/wrapper" m2-wrapper
-
+java_plan_maven_domains() {
   plan_domain java repo.maven.apache.org
   plan_domain java repo1.maven.org
   # Mirrors and repositories in settings.xml, and the Maven wrapper's download URLs.
   java_plan_url_domains < <(
-    sed -n 's:.*<url>\(.*\)</url>.*:\1:p' "$m2/settings.xml" 2>/dev/null
+    sed -n 's:.*<url>\(.*\)</url>.*:\1:p' "$HOME_DIR/.m2/settings.xml" 2>/dev/null
     sed -n 's/^ *\(distributionUrl\|wrapperUrl\) *= *//p' .mvn/wrapper/maven-wrapper.properties 2>/dev/null
   )
 }
 
-java_plan_gradle() {
-  local gradle_home=$1 file
-  for file in gradle.properties init.gradle init.gradle.kts; do
-    if [[ -f $gradle_home/$file ]]; then plan_mount java "$gradle_home/$file"; fi
-  done
-  if [[ -d $gradle_home/init.d ]]; then plan_mount java "$gradle_home/init.d"; fi
-
-  plan_cache java "$gradle_home/caches" gradle-caches
-  plan_cache java "$gradle_home/wrapper" gradle-wrapper
-
-  for file in services.gradle.org downloads.gradle.org plugins.gradle.org plugins-artifacts.gradle.org \
-              repo.maven.apache.org repo1.maven.org; do
-    plan_domain java "$file"
+java_plan_gradle_domains() {
+  local domain
+  for domain in services.gradle.org downloads.gradle.org plugins.gradle.org plugins-artifacts.gradle.org \
+                repo.maven.apache.org repo1.maven.org; do
+    plan_domain java "$domain"
   done
   # distributionUrl=https\://services.gradle.org/distributions/gradle-9.6.0-bin.zip
   java_plan_url_domains < <(sed -n 's/^ *distributionUrl *= *//p' gradle/wrapper/gradle-wrapper.properties 2>/dev/null)

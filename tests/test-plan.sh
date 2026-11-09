@@ -28,25 +28,33 @@ expect_plan 'protobuf-compiler=3.21.12-11 [extra]  ⚠ not installed on the host
 expect_plan "vendor-tool=2.0-1 [extra]  ⚠ not installed: the host's version isn't in the debian archive"
 expect_plan "libbpo-dev=5.0-1~bpo13+1 [extra]  ⚠ not installed: the host's version isn't in the debian archive"
 expect_plan 'no-such-package [extra]  ⚠ no such apt package'
-expect_plan 'libx11-dev [extra]  excluded in .go-yolo/config'
+[[ $plan_text != *libx11-dev* ]] || fail 'an unpicked package is in the plan'
 expect_plan "cert      $TEST_DIR/ca/corp/root.crt"
 expect_plan 'env       TZ=Europe/Prague'
 expect_plan 'env       NO_PROXY=localhost'
-expect_plan 'env       HTTPS_PROXY  not passed: looks like a secret (to pass it: extra env HTTPS_PROXY)'
+[[ $plan_text != *HTTPS_PROXY* ]] || fail 'a secret-looking proxy was picked without asking for it'
 expect_plan 'env       API_TOKEN [extra]  value not shown'
-expect_plan 'NOT_SET_ANYWHERE [extra]  not passed: not set on the host'
+expect_plan 'NOT_SET_ANYWHERE [extra]  ⚠ picked, but not set on the host: not passed'
 [[ $plan_text != *s3cr3t* && $plan_text != *user:pw* ]] || fail 'the plan shows a secret value'
 [[ ! -e $STATE/plan ]] || fail 'a dry run confirmed the plan'
 pass 'the plan resolves packages, certificates and env, and never shows secrets'
 
-output="$(launch shell 2>&1)" && fail 'an unconfirmed plan was used without a terminal'
-[[ $output == *'run go-yolo in a terminal to confirm it, or pass --yes'* ]] || fail "unexpected error: $output"
-[[ ! -e $STATE/plan ]] || fail 'the plan was saved without confirmation'
+output="$(launch shell 2>&1)" && fail 'a project without a setup ran without a terminal'
+[[ $output == *'no setup yet: run go-yolo.sh --setup in a terminal (or pass --yes'* ]] || fail "unexpected error: $output"
+[[ ! -e $STATE/plan ]] || fail 'the plan was saved without a setup'
 cp /dev/null "$TEST_DIR/docker.log"
 TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
 [[ -f $STATE/plan ]] || fail '--yes did not save the plan'
 ! grep -q s3cr3t "$STATE/plan" || fail 'the saved plan holds a secret value'
-pass 'an unconfirmed plan needs a terminal or --yes'
+pass 'without a terminal, a project needs a setup and a confirmed plan, or --yes'
+
+# The --yes run converted the old config: its extras are picks, its exclude unpicked a candidate.
+[[ -f $CONFIG.old ]] || fail 'the old config was not kept as config.old'
+for picked_line in 'image  host     package    libfoo-dev' 'image  host     package    libold-dev' 'env    host     env        API_TOKEN'; do
+  grep -qxF "$picked_line" "$CONFIG" || fail "the converted config lacks '$picked_line': $(cat "$CONFIG")"
+done
+grep -q libx11-dev "$CONFIG" && fail 'an excluded package was picked'
+pass 'an old config is converted once: extras become picks, excludes unpick, the old file is kept'
 
 dockerfile="$(cat "$STATE/build/Dockerfile")"
 [[ $dockerfile == *'FROM go-yolo-base:debian-trixie-'* ]] || fail 'project image is not built FROM the base'
@@ -79,11 +87,11 @@ dry_run shell
 [[ ${ARGS[-1]} != "$image_before" ]] || fail 'a package change kept the image'
 pass 'changes are shown as a diff; only build-time changes change the image'
 
-printf 'extra package ok\ninstall package nope\n' >"$CONFIG"
-[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"$CONFIG:2: unknown 'install' (use extra or exclude)"* ]] \
+printf 'image host package ok\ninstall host package nope\n' >"$CONFIG"
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"$CONFIG:2: unknown mode 'install' (use one of: image mount cache env)"* ]] \
   || fail 'a bad config line was accepted'
-printf 'extra thing x\n' >"$CONFIG"
-[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"unknown kind 'thing'"* ]] || fail 'a bad kind was accepted'
+printf 'image nosuch thing x\n' >"$CONFIG"
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"unknown catalog 'nosuch'"* ]] || fail 'a bad catalog was accepted'
 rm -f "$CONFIG" "$STATE/plan"
 TEST_ENV=()
 pass '.go-yolo/config errors name the file and line'
@@ -91,7 +99,8 @@ pass '.go-yolo/config errors name the file and line'
 # The default plan view: one line per group, then every warning in full.
 rm -rf -- "$STATE"
 mkdir -p "$STATE"
-printf 'extra package libfoo-dev\nextra package libold-dev\n' >"$CONFIG"
+printf 'image host package libfoo-dev\nimage host package libold-dev\nimage host cert %s\nenv host tz -\n' \
+  "$TEST_DIR/ca/corp/root.crt" >"$CONFIG"
 summary="$(launch --dry-run shell 2>&1 >/dev/null)"
 [[ $summary == *'  host:  base '*'1 cert'*'1 env'* && $summary == *'  extra: 2 packages'* ]] \
   || fail "the summary lacks the group lines: $summary"
@@ -112,14 +121,14 @@ libbump-dev:
         500 http://deb.debian.org/debian trixie/main amd64 Packages
         100 /var/lib/dpkg/status
 POLICY
-printf 'extra package libbump-dev\n' >"$CONFIG"
+printf 'image host package libbump-dev\n' >"$CONFIG"
 launch --yes shell 2>/dev/null
 sed -i 's/2\.0-1/2.0-2/' "$TEST_DIR/apt-policy"
 output="$(launch shell 2>&1)" || fail "a version bump needed confirmation: $output"
 [[ $output == *'plan updated, nothing new exposed: package libbump-dev 2.0-1 → 2.0-2'* ]] \
   || fail "the version bump was not noted: $output"
 grep -q '^package	extra	apt	libbump-dev	2.0-2	' "$STATE/plan" || fail 'the updated plan was not saved'
-printf 'extra package libbump-dev\nextra env NEW_VAR\n' >"$CONFIG"
+printf 'image host package libbump-dev\nenv host env NEW_VAR\n' >"$CONFIG"
 TEST_ENV=(NEW_VAR=x)
 if output="$(launch shell 2>&1)"; then fail 'a newly exposed env variable was taken without asking'; fi
 TEST_ENV=()
@@ -154,6 +163,8 @@ pass 'a first run builds the base image without asking and shows one plan, with 
 
 
 rm -rf -- "$STATE"
+mkdir -p "$STATE"
+printf 'env host tz -\n' >"$STATE/config"   # a setup, so the run goes straight to the plan
 # The prompt needs a terminal; script(1) provides one and feeds it our answers.
 if command -v script >/dev/null 2>&1; then
   answer_prompt() {
@@ -163,7 +174,7 @@ if command -v script >/dev/null 2>&1; then
       GOROOT="$TEST_HOME/toolchain" GOPATH="$TEST_HOME/go" GOCACHE="$TEST_HOME/cache" \
       GOMODCACHE="$TEST_HOME/go/pkg/mod" DOCKER_TEST_LOG="$TEST_DIR/docker.log" TZ=UTC \
       GOYOLO_CA_DIR="$TEST_DIR/ca" "$REPO_DIR/go-yolo.sh" shell -c true
-    (cd "$TEST_HOME/project" && printf '%s\n' "$@" | TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null) \
+    (cd "$TEST_HOME/project" && printf '%s\n' "$@" | TEST_CMD=$cmd timeout 60 script -qec 'bash -c "$TEST_CMD"' /dev/null) \
       | tr -d '\r' || true
   }
   output="$(answer_prompt '?' n)"

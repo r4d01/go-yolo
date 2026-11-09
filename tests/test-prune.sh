@@ -58,7 +58,7 @@ if command -v script >/dev/null 2>&1; then
     GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" DOCKER_TEST_LOG="$TEST_DIR/docker.log" \
     DOCKER_TEST_IMAGES="$TEST_DIR/images" FZF_TEST_PICK="$kept_hash" "$REPO_DIR/go-yolo.sh" --prune
   cp /dev/null "$TEST_DIR/docker.log"
-  printf 'p\n' | TEST_CMD=$cmd script -qec 'bash -c "$TEST_CMD"' /dev/null >/dev/null
+  printf 'p\n' | TEST_CMD=$cmd timeout 60 script -qec 'bash -c "$TEST_CMD"' /dev/null >/dev/null
   removed="$(removed_items)"
   [[ $removed == "go-yolo:kept-1-$kept_hash" ]] || fail "[p]ick removed: $removed"
   rm -f "$TEST_DIR/bin/fzf"

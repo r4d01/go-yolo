@@ -58,10 +58,6 @@ plan_packages() {
   local wanted=() resolved=()
   for name in "$@"; do
     if plan_has package "$name"; then continue; fi
-    if config_has exclude package "$name"; then
-      plan_add package "$group" skip "$name" - excluded
-      continue
-    fi
     wanted+=("$name")
   done
   ((${#wanted[@]})) || return 0
