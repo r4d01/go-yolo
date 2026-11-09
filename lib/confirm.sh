@@ -57,11 +57,12 @@ show_plan() {
   for line in "${PLAN[@]}"; do plan_row ' ' "$line"; done
 }
 
-# Show the plan in short: one line per group ("go: toolchain go1.27.0, 2 caches, 6 env"), then
+# Show the plan in short: one line per group ("go: toolchain go1.27.0, gopls, dlv, 2 caches,
+# 6 env, 1 copied from the host"), then
 # every item with a warning in full, so nothing that needs a look is hidden.
 show_plan_summary() {
   local kind group method name value flags item groups=() line warned=()
-  local -A parts=() counts=() left_out=() versions=()
+  local -A parts=() counts=() left_out=() versions=() copied=()
   while IFS=$'\t' read -r kind group method name value flags; do
     if [[ -z ${parts[$group]+set} ]]; then groups+=("$group"); parts[$group]=""; fi
     if [[ $method == skip ]]; then
@@ -69,10 +70,12 @@ show_plan_summary() {
     else
       case $kind in
         base) item="base ${name##*:}" ;;
-        toolchain) versions[$group]+="${versions[$group]:+, }$value"; item="" ;;
+        toolchain) versions[$group]+="${versions[$group]:+, }${value%%, *}"; item="" ;;
         tools) item="tools (${value%%,*})" ;;
+        tool) item="${name##*/}" ;;
         *) counts[$group/$kind]=$((${counts[$group/$kind]:-0} + 1)); item="" ;;
       esac
+      if [[ $method == copy ]]; then copied[$group]=$((${copied[$group]:-0} + 1)); fi
       if [[ -n $item ]]; then parts[$group]+="${parts[$group]:+, }$item"; fi
     fi
     if [[ $flags != - ]] && plan_line_warns "$flags"; then warned+=("$kind"$'\t'"$group"$'\t'"$method"$'\t'"$name"$'\t'"$value"$'\t'"$flags"); fi
@@ -86,6 +89,7 @@ show_plan_summary() {
         line+="${line:+, }$(count_of "${counts[$group/$kind]}" "$kind")"
       fi
     done
+    if [[ -n ${copied[$group]:-} ]]; then line+="${line:+, }${copied[$group]} copied from the host"; fi
     if [[ -n ${left_out[$group]:-} ]]; then line+="${line:+, }${left_out[$group]} left out"; fi
     printf '  %-6s %s\n' "$group:" "$line" >&2
   done

@@ -23,7 +23,7 @@ plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 [[ ! -e $CONFIG ]] || fail 'a dry run saved the setup'
 expect_plan "toolchain $TEST_HOME/toolchain (go1.99.0) [go]"
 launch --yes --setup 2>/dev/null
-for line in 'image  go       toolchain  -' 'image  go       tools      -' 'cache  go       cache      modules' \
+for line in 'image  go       toolchain  -' 'image  go       tool       gopls' 'cache  go       cache      modules' \
             'cache  go       cache      build' 'env    go       env        GOPROXY' 'env    host     tz         -' \
             "image  host     cert       $TEST_DIR/ca/corp/root.crt"; do
   grep -qxF -- "$line" "$CONFIG" || fail "the suggested picks lack '$line': $(cat "$CONFIG")"

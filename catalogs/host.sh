@@ -161,6 +161,20 @@ host_probe() {
         version="$(dpkg-query -W -f='${Version}' "$name" 2>/dev/null)" || version="(not installed)"
         printf 'package %s\t%s\n' "$name" "${version:-(not installed)}"
         ;;
+      toolchain|tool)
+        # Installed, built or copied: compare the files, not just the version. A directory by
+        # its files' names, sizes and link targets (contents would take too long), a file by
+        # its contents. (Apt toolchains are checked as packages.)
+        if [[ $method == apt ]]; then continue; fi
+        if [[ -d $name ]]; then
+          version="$(find "$name" \( -type f -o -type l \) -printf '%P %s %l\n' 2>/dev/null | LC_ALL=C sort | sha256sum | cut -c1-12)"
+          printf '%s %s\tfiles: %s\n' "$kind" "$name" "$version"
+        elif [[ -f $name ]]; then
+          printf '%s %s\tsha256:%s\n' "$kind" "$name" "$(sha256sum <"$name" | cut -c1-12)"
+        else
+          printf '%s %s\t(missing)\n' "$kind" "$name"
+        fi
+        ;;
       cert)
         version="(missing)"
         if [[ -r $name ]]; then version="sha256:$(sha256sum <"$name" | cut -c1-12)"; fi

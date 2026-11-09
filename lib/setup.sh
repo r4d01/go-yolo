@@ -102,7 +102,7 @@ candidate_label() {
 # run_setup [ask] — pick the project's items and set CONFIG_ITEMS: with "ask" in the picker,
 # otherwise the initial selection as it is (--yes, or a dry run's preview).
 run_setup() {
-  local labels=() indexes=() items=() i catalog mode kind id rest answer kind_word name picked
+  local labels=() indexes=() items=() i catalog mode kind id rest answer kind_word name picked config_mode
   collect_candidates
   initial_selection
   indexes=("${SETUP_SELECTED[@]}")
@@ -122,8 +122,10 @@ run_setup() {
     done
   fi
 
+  # A picked item keeps the mode it has in the config (copy instead of image, set by hand).
   for i in $(printf '%s\n' "${indexes[@]}" | sort -n -u); do
     IFS=$'\t' read -r catalog mode kind id rest <<<"${SETUP_CANDIDATES[i]}"
+    if config_mode="$(picked_mode "$catalog" "$kind" "$id")"; then mode=$config_mode; fi
     items+=("$mode"$'\t'"$catalog"$'\t'"$kind"$'\t'"$id")
   done
   CONFIG_ITEMS=("${items[@]}")

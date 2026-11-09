@@ -96,14 +96,14 @@ after privileges are dropped.
 - A **Debian, Ubuntu or Kali** host (`ID` in `/etc/os-release`). Derivatives such as Mint or
   Pop!\_OS are not detected on purpose: their codenames are not Docker image tags.
 - Docker, and a user that can run `docker` (e.g. in the `docker` group).
-- Optional: Go on the host. A project with a `go.mod` gets a copy of its toolchain and tools
-  (see [Go](#go)).
-- Optional: a JDK, Maven, Gradle on the host. A Maven or Gradle project gets copies of them (see
-  [Java](#java)); other host commands can be added in the setup.
+- Optional: Go on the host. A project with a `go.mod` gets its toolchain and tools, installed
+  from their source at the host's versions (see [Go](#go)).
+- Optional: a JDK, Maven, Gradle on the host. A Maven or Gradle project gets them the same way
+  (see [Java](#java)); other host commands can be added in the setup.
 
 The image's base matches the host (`debian:<codename>`, `ubuntu:<codename>` or
-`kalilinux/kali-rolling`), so host binaries copied or mounted into it (the Go toolchain,
-`~/go/bin/*`, a JDK) find the same glibc. **Kali is a rolling release:** the image's glibc matches the host only while both are up to
+`kalilinux/kali-rolling`), so apt installs the host's versions and host binaries copied into it
+(a JDK no recipe knows, a Go tool built from local sources) find the same glibc. **Kali is a rolling release:** the image's glibc matches the host only while both are up to
 date. Run `go-yolo.sh --rebuild shell` after upgrading the host.
 
 ## Install
@@ -201,12 +201,13 @@ what your host has, from every catalog, and you pick what this project's contain
 go-yolo: pick what this project's container gets (versions always come from the host):
   host   image  locale en_US.UTF-8 (generated in the image)
   host   env    time zone Europe/Prague
-  go     image  Go go1.27.0 (/opt/go/1.27.0)
-  go     image  tools in /home/me/go/bin: dlv gopls
+  go     image  Go go1.27.0 (/opt/go/1.27.0) · install: go.dev release (sha256)
+  go     image  tool dlv v1.27.2 (/home/me/go/bin/dlv) · install: go install …@v1.27.2
+  go     image  tool gopls v0.23.0 (/home/me/go/bin/gopls) · install: go install …@v0.23.0
   go     cache  module cache (a project volume at /home/me/go/pkg/mod)
   go     cache  build cache (a project volume at /home/me/.cache/go-build)
-  java   image  JDK 21.0.12.1, your default java, from apt (/usr/lib/jvm/java-21-openjdk-amd64)
-  java   image  JDK 25.0.3 (/home/me/.gradle/jdks/eclipse_adoptium-25-amd64-linux.2)
+  java   image  JDK 21.0.12.1, your default java (/usr/lib/jvm/java-21-openjdk-amd64) · install: apt
+  java   image  JDK 25.0.3 (/home/me/.gradle/jdks/eclipse_adoptium-25-amd64-linux.2) · install: Adoptium (sha256)
   java   cache  gradle-caches (a project volume at /home/me/.gradle/caches)
   ...
 go-yolo: add more, e.g. 'package protobuf-compiler', 'tool kotlin', 'mount ~/notes', 'env GITHUB_TOKEN' (Enter: done):
@@ -222,12 +223,17 @@ The picks are saved in `.go-yolo/config`, one per line (editing it by hand works
 
 ```
 image  go       toolchain  -
-image  go       tools      -
+image  go       tool       gopls
+copy   go       tool       my-tool
 cache  go       cache      modules
 image  java     jdk        /usr/lib/jvm/java-21-openjdk-amd64
 image  host     package    protobuf-compiler
 env    host     env        GITHUB_TOKEN
 ```
+
+The first word is the mode: `image` (installed in the image from its source, or copied where no
+recipe knows how), `copy` (copied from the host even where a recipe would install it; set it by
+hand, `--setup` keeps it), `mount` (read-only), `cache` (a project volume) or `env`.
 
 The config says **what**, never which version: versions are read from the host on every run.
 After the setup nothing is detected again; a new JDK on the host, say, shows up in the picker
@@ -247,7 +253,7 @@ one line per group plus every item with a warning in full, and you confirm it:
 ```
 go-yolo: plan for /home/me/src/myapp (new; go-yolo.sh --setup changes the picks):
   host:  base debian-trixie-d33d4892, 1 locale, 4 parity notes, 1 env
-  go:    toolchain go1.27.0, tools (2 files), 2 caches, 3 domains, 5 env
+  go:    toolchain go1.27.0, dlv, gopls, 2 caches, 3 domains, 5 env
   extra: 2 packages
   warnings:
     package   zlib1g-dev=1:1.3.dfsg+really1.3.1-1+deb13u1 [extra]  ⚠ the host has 1:1.3.dfsg+really1.3.1-1+b1, an older version: the image gets the archive's version (apt upgrade the host to match)
@@ -301,6 +307,31 @@ Variables that look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*KEY*`, 
 `*AUTH*`, or a URL with a password) are only passed when you pick them. Their values are never
 shown or stored, only a hash, so a change is still noticed.
 
+### Installed, not copied
+
+Picked toolchains and tools are **installed in the image from their source**, at the host's
+version, path and owner: the vendor's download (checked against the checksum the vendor
+publishes, fetched from the vendor while the image builds), or the ecosystem's own installer
+(`go install path@version`). The result is then **checked against the host's files**: the plan
+keeps a hash of a few of them (Go's `bin/go` and `VERSION`, a JDK's `release`, `bin/java` and
+`libjvm.so`, a tool's binary), and the build fails if the installed files differ. So the
+container gets what the host has, not just the same version number, and nothing is read from
+your host's toolchain directories while building.
+
+| item | from | checked against the host's |
+|------|------|----------------------------|
+| Go toolchain | the go.dev release (`dl.google.com/go`, SHA-256) | `bin/go`, `VERSION` |
+| Go tool | `go install path@version` in a build stage, with the host's Go, paths and build settings (`CGO_ENABLED`, `GOAMD64`, `-trimpath`, `-tags`, ...) | the binary (byte for byte) |
+| Temurin JDK | the Adoptium API (SHA-256) | `release`, `bin/java`, `lib/server/libjvm.so` |
+| Maven, Gradle | Apache's release archive (SHA-512), `services.gradle.org` (SHA-256) | `bin/mvn` or `bin/gradle` and a core jar |
+| apt JDK, apt Go | apt, at the host's version | (the package version) |
+
+Anything else is **copied** from the host, and the plan says why: a Go built from source, a tool
+built from local sources (`(devel)`), with another Go than the host's, with `-ldflags`, or from a
+private module, a JDK from a vendor without a recipe. Building the image needs the network for
+the downloads (running the container doesn't, see `--net`). If a download is gone or an installed
+item doesn't match (the build says which files), set its mode to `copy` in `.go-yolo/config`.
+
 The confirmed plan is stored in `.go-yolo/plan`. The project image's tag
 (`go-yolo:<project>-<path hash>-<plan hash>`) includes a hash of the plan's build-time items, so
 a change to them builds a new image; a change to `env` items only needs your confirmation.
@@ -313,8 +344,8 @@ pre-selects it:
 
 | item | what | how |
 |------|------|-----|
-| `toolchain` | `GOROOT` | copied into the image at the same path (its apt packages if it comes from apt) |
-| `tools` | `GOBIN`, or the first GOPATH entry's `bin/` | copied at the same path, owned by you: `go install` works in the container, but its results don't outlive it |
+| `toolchain` | `GOROOT` | the go.dev release, installed at the same path (its apt packages if it comes from apt; a copy if it isn't a release) |
+| `tool` | each tool in `GOBIN`, or the first GOPATH entry's `bin/` | built with `go install path@version` (from `go version -m`), checked against your binary, at the same path, owned by you; a copy if that can't give the same binary. `go install` works in the container, but its results don't outlive it |
 | `cache` | `GOMODCACHE`, `GOCACHE` | the project's Docker volumes `go-mod` and `go-build`, at the host's paths; they start empty and persist between runs |
 | `mount` | the `GOENV` file (`go env -w` settings); a `go.work` outside the repository and the modules it uses outside it | read-only at the same path, with a warning for the outside ones |
 | `package` | the libraries of `#cgo pkg-config: NAME` lines (the package owning `NAME.pc` on the host), and pkg-config | apt, at the host's versions |
@@ -324,7 +355,8 @@ pre-selects it:
 The toolchain and tools are first on `PATH`. Your `~/go`, `~/go/bin` and `~/.cache/go-build`
 are never mounted, so nothing the agent does there reaches the host. The first build of a
 project downloads its modules into the project's volume (so it needs the network); later builds
-work with `--net none`. `--parity` compares `go version`, `go env` and the tools.
+work with `--net none`. `--parity` compares `go version`, `go env` and the tools, and the
+installed toolchain and tools with the host's files.
 
 ### Java
 
@@ -333,8 +365,8 @@ The setup offers the host's Java; a `pom.xml`, `mvnw`, `build.gradle(.kts)`,
 
 | item | what | how |
 |------|------|-----|
-| `toolchain` | **each JDK on the host**: `/usr/lib/jvm/*`, SDKMAN, `~/.jdks` (IntelliJ), mise, asdf, Gradle's provisioned JDKs (`~/.gradle/jdks`), `org.gradle.java.installations.paths`, `toolchains.xml`'s `jdkHome`s | apt packages for apt-installed JDKs (and links such as `default-java`), copies at the same path, owned as on the host, for the rest; the default `java` (`$JAVA_HOME`, else the one on `PATH`) first on `PATH` |
-| `toolchain` | Maven or Gradle, when they are on `PATH` (pre-selected if the project has no wrapper) | as an added host command |
+| `toolchain` | **each JDK on the host**: `/usr/lib/jvm/*`, SDKMAN, `~/.jdks` (IntelliJ), mise, asdf, Gradle's provisioned JDKs (`~/.gradle/jdks`), `org.gradle.java.installations.paths`, `toolchains.xml`'s `jdkHome`s | apt packages for apt-installed JDKs (and links such as `default-java`); Temurin JDKs from Adoptium; copies at the same path for the rest; all owned as on the host (Gradle's markers such as `provisioned.ok` kept), the default `java` (`$JAVA_HOME`, else the one on `PATH`) first on `PATH` |
+| `toolchain` | Maven or Gradle, when they are on `PATH` (pre-selected if the project has no wrapper) | their distribution at the host's version (an SDKMAN `current` link kept); a copy for anything else |
 | `mount` | `~/.m2/settings.xml`, `toolchains.xml`; `GRADLE_USER_HOME`'s `gradle.properties`, `init.gradle(.kts)`, `init.d/` | read-only at the same path |
 | `cache` | the Maven local repository (`<localRepository>` or `~/.m2/repository`) and `~/.m2/wrapper`; Gradle's `caches/` and `wrapper/` | the project's Docker volumes, at the host's paths; they start empty, so the first build downloads the wrapper's distribution and the dependencies |
 | `env` | `JAVA_HOME`, `JAVA_OPTS`, `JAVA_TOOL_OPTIONS`, ...; for Maven `MAVEN_OPTS`, ...; for Gradle `GRADLE_OPTS`, `GRADLE_USER_HOME`, `ORG_GRADLE_PROJECT_*` (secrets filtered) | `docker run -e` |
@@ -593,6 +625,7 @@ too.
 | `lib/plan.sh`       | the plan model: adding, finding, sorting, hashing, saving items    |
 | `lib/apt.sh`        | apt versions and owners; apt package items                         |
 | `lib/items.sh`      | the other helpers catalogs use to add items                        |
+| `lib/recipes.sh`    | install recipes: downloads and build-stage builds, checked against the host |
 | `lib/confirm.sh`    | showing, diffing and confirming the plan                           |
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
@@ -638,7 +671,9 @@ skip when Docker is unavailable.
 - The Kali image matches the host's glibc only while both are up to date (rebuild after upgrading).
 - Only the host's primary GID is mapped. Supplementary groups are not.
 - Running as root on the host (UID 0) is refused.
-- Only the GOPATH's first entry's `bin/` is copied when GOPATH is a list (as `go install` uses it).
+- Only the GOPATH's first entry's `bin/` is offered when GOPATH is a list (as `go install` uses it).
+- A vendor can withdraw an old version; its download then fails, and the item needs the `copy`
+  mode until the host is upgraded.
 - Private modules (`GOPRIVATE`, `GONOPROXY`) are fetched directly, as on the host, but the
   container has no SSH keys or `~/.netrc`, so that fails.
 - A project's first build downloads all its dependencies into its cache volumes, so it needs the

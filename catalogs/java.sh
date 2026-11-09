@@ -3,9 +3,12 @@
 #
 #   jdk     each JDK on the host (/usr/lib/jvm, SDKMAN, ~/.jdks, Gradle's provisioned JDKs, mise,
 #           asdf, org.gradle.java.installations.paths, toolchains.xml): apt packages for
-#           apt-installed ones, copies (owned as on the host) for the rest; the default `java`
-#           first on PATH; symlinks to them (SDKMAN's current, default-java) kept
-#   tool    mvn and gradle, when they are on PATH (as `extra tool` does)
+#           apt-installed ones, Temurin ones from Adoptium (checked against Adoptium's SHA-256 and
+#           the host's release, bin/java and libjvm.so), copies (owned as on the host) for the
+#           rest; the default `java` first on PATH; symlinks to them (SDKMAN's current,
+#           default-java) kept
+#   tool    mvn and gradle, when they are on PATH: their distributions from Apache's and
+#           Gradle's release archives (with their checksums), else as `extra tool` does
 #   mount   ~/.m2/settings.xml and toolchains.xml, GRADLE_USER_HOME's gradle.properties and
 #           init scripts: read-only
 #   cache   the Maven local repository and wrapper, Gradle's caches and wrapper: at the host's
@@ -85,11 +88,10 @@ java_discover() {
   while IFS= read -r dir; do
     [[ ! -L $dir ]] || continue   # a symlink comes with the JDK it points to
     real="$(realpath -- "$dir")"
-    version="$(sed -n 's/^JAVA_VERSION="\(.*\)"/\1/p' "$real/release" 2>/dev/null)"
-    what="JDK ${version:-?}"
+    version="$(java_release "$real" JAVA_VERSION)" || version="?"
+    what="JDK $version"
     if [[ $real == "$default" ]]; then what+=", your default java"; fi
-    if apt_owners "$real" >/dev/null; then what+=", from apt"; fi
-    printf 'image\tjdk\t%s\t%s\t%s\t%s (%s)\n' "$real" "$hint_java" "$real" "$what" "$real"
+    printf 'image\tjdk\t%s\t%s\t%s\t%s (%s) · %s\n' "$real" "$hint_java" "$real" "$what" "$real" "$(java_jdk_how "$real")"
   done < <(java_jdk_dirs)
 
   for tool in mvn gradle; do
@@ -125,7 +127,9 @@ java_resolve() {
   local name tool cache path maven=0 gradle=0
   catalog_picked java || return 0
   java_plan_jdks
-  while IFS= read -r name; do plan_tool java "$name"; done < <(picked_ids java tool)
+  while IFS= read -r name; do
+    plan_tool java "$name" "$(picked_mode java tool "$name")" java_plan_build_tool
+  done < <(picked_ids java tool)
   while IFS= read -r name; do
     if [[ -e $name ]]; then plan_mount java "$name"; else plan_add mount java skip "$name" - gone; fi
   done < <(picked_ids java mount)
@@ -177,21 +181,80 @@ java_jdk_dirs() {
   done | awk '!seen[$0]++'
 }
 
+# java_release DIR KEY — a value from a JDK's release file (KEY="value"); fails if there is none.
+java_release() {
+  local value
+  value="$(sed -n "s/^$2=\"\(.*\)\"\$/\1/p" "$1/release" 2>/dev/null | head -n 1)"
+  [[ -n $value ]] && printf '%s' "$value"
+}
+
+# java_temurin DIR — if DIR is an Eclipse Temurin build Adoptium still serves, print its Adoptium
+# API path ("jdk-25.0.3%2B9/linux/x64/jdk/hotspot/normal/eclipse"), from its release file:
+#   IMPLEMENTOR="Eclipse Adoptium"  IMPLEMENTOR_VERSION="Temurin-25.0.3+9"  OS_ARCH="x86_64"
+java_temurin() {
+  local dir=$1 name arch type
+  [[ $(java_release "$dir" IMPLEMENTOR) == 'Eclipse Adoptium' && $(java_release "$dir" OS_NAME) == Linux ]] || return 1
+  [[ $(java_release "$dir" LIBC || true) != musl ]] || return 1
+  [[ $(java_release "$dir" JVM_VARIANT || printf Hotspot) == Hotspot ]] || return 1
+  name="$(java_release "$dir" IMPLEMENTOR_VERSION)" || return 1
+  name=${name#Temurin-}
+  # Java 8 is "1.8.0_422-b05" in FULL_VERSION, "jdk8u422-b05" at Adoptium; later ones "jdk-25.0.3+9".
+  if [[ $(java_release "$dir" JAVA_VERSION) == 1.8.0_* ]]; then
+    name="$(java_release "$dir" FULL_VERSION)" || return 1
+    name="jdk8u${name#1.8.0_}"
+  else
+    name="jdk-$name"
+  fi
+  [[ $name =~ ^jdk[-0-9][0-9A-Za-z.+_-]*$ ]] || return 1
+  case $(java_release "$dir" OS_ARCH) in
+    x86_64|amd64) arch=x64 ;;
+    aarch64|arm64) arch=aarch64 ;;
+    *) return 1 ;;
+  esac
+  case $(java_release "$dir" IMAGE_TYPE || true) in
+    JRE) type=jre ;;
+    JDK) type=jdk ;;
+    *) if [[ -x $dir/bin/javac ]]; then type=jdk; else type=jre; fi ;;
+  esac
+  printf '%s/linux/%s/%s/hotspot/normal/eclipse' "${name//+/%2B}" "$arch" "$type"
+}
+
+# java_jdk_how DIR — how the picker says the JDK gets into the image.
+java_jdk_how() {
+  local vendor
+  if apt_owners "$1" >/dev/null; then printf 'install: apt'
+  elif java_temurin "$1" >/dev/null; then printf 'install: Adoptium (sha256)'
+  else
+    vendor="$(java_release "$1" IMPLEMENTOR)" || vendor="unknown vendor"
+    printf 'copy: no recipe for %s' "$vendor"
+  fi
+}
+
 # Plan the picked JDKs, then the symlinks on the host that point to them.
 java_plan_jdks() {
-  local default="" dir real version flags owners
+  local default="" dir real version flags owners mode api file files
   default="$(java_default_home)" || default=""
   while IFS= read -r real; do
     if [[ ! -x $real/bin/java ]]; then plan_add toolchain java skip "$real" - gone; continue; fi
-    version="$(sed -n 's/^JAVA_VERSION="\(.*\)"/\1/p' "$real/release" 2>/dev/null)"
+    version="$(java_release "$real" JAVA_VERSION)" || version=-
+    mode="$(picked_mode java jdk "$real")"
     flags=-
     if [[ $real == "$default" ]]; then flags=on-path; fi
-    if owners="$(apt_owners "$real")"; then
+    if [[ $mode == copy ]]; then
+      plan_copy toolchain java "$real" "$version" "$(add_flag "$flags" copy-picked)"
+    elif owners="$(apt_owners "$real")"; then
       # shellcheck disable=SC2086 # one word per package
       plan_packages java $owners
-      if ! plan_has toolchain "$real"; then plan_add toolchain java apt "$real" "${version:--}" "$flags"; fi
+      if ! plan_has toolchain "$real"; then plan_add toolchain java apt "$real" "$version" "$flags"; fi
+    elif api="$(java_temurin "$real")"; then
+      files=()
+      for file in release bin/java lib/server/libjvm.so; do
+        if [[ -f $real/$file ]]; then files+=("$file"); fi
+      done
+      plan_download toolchain java "$real" "$version" "$flags" "https://api.adoptium.net/v3/binary/version/$api" \
+        sha256 "https://api.adoptium.net/v3/checksum/version/$api" "${files[@]}"
     else
-      plan_copy toolchain java "$real" "${version:--}" "$flags"
+      plan_copy toolchain java "$real" "$version" "$(add_flag "$flags" no-recipe)"
     fi
   done < <(picked_ids java jdk)
 
@@ -206,6 +269,30 @@ java_plan_jdks() {
       plan_add link java link "$dir" "$(realpath -- "$dir")"
     fi
   done < <(java_jdk_dirs)
+}
+
+# java_plan_build_tool HOME — install a Maven or Gradle distribution at HOME (where mvn or gradle
+# is on the host) from its release archive, at the host's version; fail for anything else.
+java_plan_build_tool() {
+  local home=$1 real jar version url variant=bin
+  real="$(realpath -- "$home")"
+  if jar="$(first_file "$real"/lib/maven-core-*.jar)"; then
+    version=${jar##*/maven-core-}
+    version=${version%.jar}
+    [[ $version =~ ^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?$ ]] || return 1
+    url="https://archive.apache.org/dist/maven/maven-${version%%.*}/$version/binaries/apache-maven-$version-bin.tar.gz"
+    plan_download toolchain java "$home" "$version" on-path "$url" sha512 "$url.sha512" bin/mvn "lib/${jar##*/}"
+  elif jar="$(first_file "$real"/lib/gradle-base-services-[0-9]*.jar)"; then
+    version=${jar##*/gradle-base-services-}
+    version=${version%.jar}
+    [[ $version =~ ^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?$ ]] || return 1
+    # The -all distribution also has the sources and docs.
+    if [[ -d $real/src || -d $real/docs ]]; then variant=all; fi
+    url="https://services.gradle.org/distributions/gradle-$version-$variant.zip"
+    plan_download toolchain java "$home" "$version" on-path "$url" sha256 "$url.sha256" bin/gradle "lib/${jar##*/}"
+  else
+    return 1
+  fi
 }
 
 java_plan_maven_domains() {

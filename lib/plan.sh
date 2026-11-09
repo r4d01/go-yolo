@@ -6,8 +6,9 @@
 #
 #   kind      group  method  name                      value          flags
 #   base      host   image   go-yolo-base:debian-trixie-3f2a91c0  -     -
-#   toolchain go     copy    /opt/go/1.27.0            go1.27.0       on-path
-#   tools     go     copy    /home/me/go/bin           2 files, 1a2b3c4d  user-owned
+#   toolchain go     download  /opt/go/1.27.0          go1.27.0, 1db869c560a19357  on-path,download=dl.google.com
+#   tool      go     build   /home/me/go/bin/gopls     golang.org/x/tools/gopls@v0.23.0, 59296d03e278dc8c  user-owned,built
+#   toolchain java   copy    /home/me/.jdks/openjdk-27  27            user-owned,no-recipe
 #   link      java   link    /home/me/.sdkman/candidates/java/current  /home/me/.sdkman/candidates/java/21.0.5-tem  -
 #   package   host   apt     libsqlite3-dev            3.46.1-2       -
 #   package   extra  apt     protobuf-compiler         3.21.12-11     not-on-host
@@ -23,9 +24,10 @@
 #
 #   kind    what it is; lib/kinds.sh says which kinds go into the image and how each is shown
 #   group   who asks for it: host (every project), extra (.go-yolo/config), go, java, ...
-#   method  how: image, copy, link, apt, generate, check, ro, volume, allow, env; or skip: shown
-#           so you see it, but left out
-#   value   a version, a content hash, a cache name or an env value ("-" when there is none)
+#   method  how: download, build (installed from the source, lib/recipes.sh), copy, link, apt,
+#           generate, check, ro, volume, allow, env; or skip: shown so you see it, but left out
+#   value   a version, a content hash, a cache name or an env value ("-" when there is none);
+#           for download and build items also the hash the installed files are checked against
 #   flags   comma-separated, declared in lib/kinds.sh: behaviour flags change what go-yolo does,
 #           the rest only explain ("-" when there are none)
 #
@@ -94,6 +96,7 @@ plan_value() {
 resolve_plan() {
   local catalog
   PLAN=()
+  RECIPES=()
   for catalog in "${CATALOGS[@]}"; do
     "${catalog}_resolve"
   done

@@ -45,17 +45,22 @@ plan_cache_names() {
   done
 }
 
-# The PATH entries for the plan's on-path toolchains (their bin/) and tools directories; the
-# entrypoint puts them first on PATH after dropping privileges.
+# The PATH entries for the plan's on-path toolchains (their bin/), tools directories and the
+# directories of single tools (GOBIN); the entrypoint puts them first on PATH after dropping
+# privileges.
 tool_path() {
-  local line kind group method name value flags dirs=()
+  local line kind group method name value flags dir dirs=()
+  local -A seen=()
   for line in "${PLAN[@]}"; do
     IFS=$'\t' read -r kind group method name value flags <<<"$line"
     [[ $method != skip ]] || continue
     case $kind in
-      toolchain) if has_flag "$flags" on-path; then dirs+=("$name/bin"); fi ;;
-      tools) dirs+=("$name") ;;
+      toolchain) if has_flag "$flags" on-path; then dir=$name/bin; else continue; fi ;;
+      tools) dir=$name ;;
+      tool) dir=${name%/*} ;;
+      *) continue ;;
     esac
+    if [[ -z ${seen[$dir]:-} ]]; then seen[$dir]=1; dirs+=("$dir"); fi
   done
   local IFS=:
   printf '%s' "${dirs[*]}"

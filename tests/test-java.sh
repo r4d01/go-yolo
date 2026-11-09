@@ -17,6 +17,9 @@ new_jdk "$TEST_HOME/.jdks/openjdk-27" 27
 new_jdk "$TEST_HOME/.sdkman/candidates/java/17.0.9-tem" 17.0.9
 ln -s 17.0.9-tem "$TEST_HOME/.sdkman/candidates/java/current"
 new_jdk "$TEST_HOME/.gradle/jdks/eclipse_adoptium-25" 25.0.3
+TEMURIN="$TEST_HOME/.gradle/jdks/eclipse_adoptium-25"
+printf 'IMPLEMENTOR="Eclipse Adoptium"\nIMPLEMENTOR_VERSION="Temurin-25.0.3+9"\nOS_NAME="Linux"\nOS_ARCH="x86_64"\nIMAGE_TYPE="JDK"\n' >>"$TEMURIN/release"
+: >"$TEMURIN/provisioned.ok"
 mkdir -p "$TEST_HOME/.gradle/caches/modules-2" "$TEST_HOME/.gradle/wrapper/dists/gradle-9.6.0-bin"
 : >"$TEST_HOME/.gradle/wrapper/dists/gradle-9.6.0-bin/gradle-9.6.0-bin.zip.ok"
 printf 'systemProp.http.proxyPassword=hunter2\n' >"$TEST_HOME/.gradle/gradle.properties"
@@ -54,7 +57,9 @@ expect_plan 'package   default-jre-headless=2:1.21-76 [java]'
 expect_plan "toolchain $TEST_HOME/.jdks/openjdk-27 (27) [java]  owned by you, as on the host"
 expect_plan "toolchain $TEST_HOME/.sdkman/candidates/java/17.0.9-tem (17.0.9) [java]  owned by you"
 expect_plan "link      $TEST_HOME/.sdkman/candidates/java/current → $TEST_HOME/.sdkman/candidates/java/17.0.9-tem [java]"
-expect_plan "toolchain $TEST_HOME/.gradle/jdks/eclipse_adoptium-25 (25.0.3) [java]  owned by you"
+temurin_hash="$(cd "$TEMURIN" && sha256sum release bin/java | sha256sum | cut -c1-16)"
+expect_plan "toolchain $TEMURIN (25.0.3, $temurin_hash) [java]  owned by you, as on the host; installed from api.adoptium.net, checked against its checksum and the host's files"
+expect_plan "toolchain $TEST_HOME/.jdks/openjdk-27 (27) [java]  owned by you, as on the host; copied from the host: no recipe knows how to install it"
 expect_plan "mount     $TEST_HOME/.gradle/gradle.properties (read-only) [java]  ⚠ may hold credentials: the agent can read it"
 expect_plan "cache     $TEST_HOME/.gradle/caches (project volume gradle-caches) [java]"
 expect_plan "cache     $TEST_HOME/.gradle/wrapper (project volume gradle-wrapper) [java]"
@@ -72,13 +77,21 @@ printf '%s\n' "${ARGS[@]}" | grep -qxF "GOYOLO_TOOL_PATH=$TEST_DIR/jvm/java-21/b
 cp /dev/null "$TEST_DIR/docker.log"
 TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
 dockerfile="$(cat "$STATE/build/Dockerfile")"
-for jdk in "$TEST_HOME/.jdks/openjdk-27" "$TEST_HOME/.sdkman/candidates/java/17.0.9-tem" "$TEST_HOME/.gradle/jdks/eclipse_adoptium-25"; do
+for jdk in "$TEST_HOME/.jdks/openjdk-27" "$TEST_HOME/.sdkman/candidates/java/17.0.9-tem"; do
   [[ $dockerfile == *"--chown=$(id -u):$(id -g) [\"/\", \"$jdk/\"]"* ]] || fail "$jdk is not copied with your ownership"
 done
+api=jdk-25.0.3%2B9/linux/x64/jdk/hotspot/normal/eclipse
+expected="USER $(id -u):$(id -g)
+RUN /opt/go-yolo/scripts/install-archive.sh https://api.adoptium.net/v3/binary/version/$api sha256 https://api.adoptium.net/v3/checksum/version/$api $TEMURIN $temurin_hash --empty /tmp/go-yolo-empty-1 -- release bin/java
+USER root"
+[[ $dockerfile == *"$expected"* ]] || fail "the Temurin JDK is not installed from Adoptium as you (with Gradle's marker): $dockerfile"
+[[ $dockerfile != *"\"$TEMURIN/\""* ]] || fail 'the Temurin JDK is copied too'
+[[ $dockerfile == *"COPY files-empty/1 /tmp/go-yolo-empty-1"* && $(cat "$STATE/build/files-empty/1") == provisioned.ok ]] \
+  || fail "Gradle's empty marker file is not recreated" 
 [[ $dockerfile != *"\"$TEST_DIR/jvm/java-21/\""* ]] || fail 'the apt JDK is copied instead of installed'
 [[ $dockerfile == *"ln -sfn $TEST_HOME/.sdkman/candidates/java/17.0.9-tem $TEST_HOME/.sdkman/candidates/java/current"* ]] \
   || fail 'the SDKMAN current link is not recreated'
-pass "Java: every JDK Gradle could pick is planned (apt or copied), the default first on PATH; Gradle's caches are project-local"
+pass "Java: every JDK Gradle could pick is planned (apt, from Adoptium, or copied), the default first on PATH; Gradle's caches are project-local"
 
 # A Maven project with a wrapper and a settings.xml with its own local repository and a mirror.
 rm -rf -- "$STATE" "$JAVA_PROJECT"/{build.gradle.kts,gradlew,gradle}
@@ -127,3 +140,35 @@ expect_plan "tools     no-such-tool (-) [extra]  ⚠ not on the host's PATH"
 rm -rf -- "$STATE" "$TEST_DIR/bin"/{kotlin,plaintool}
 TEST_ENV=()
 pass 'extra tool brings a host command: its install directory (keeping a current-style link), on PATH'
+
+# mvn and gradle on PATH, picked from the Java catalog: their distributions from the release
+# archives at the host's versions (SDKMAN's current link kept); with the copy mode a copy.
+mkdir -p "$TEST_DIR/opt/maven/bin" "$TEST_DIR/opt/maven/lib" "$TEST_HOME/.sdkman/candidates/gradle/8.5/lib"
+printf '#!/bin/sh\n' >"$TEST_DIR/opt/maven/bin/mvn"
+chmod +x "$TEST_DIR/opt/maven/bin/mvn"
+: >"$TEST_DIR/opt/maven/lib/maven-core-3.9.9.jar"
+: >"$TEST_HOME/.sdkman/candidates/gradle/8.5/lib/gradle-base-services-8.5.jar"
+mkdir -p "$STATE"
+printf 'image java tool mvn\nimage java tool gradle\n' >"$STATE/config"
+TEST_ENV=(PATH="$TEST_HOME/.sdkman/candidates/gradle/current/bin:$TEST_DIR/opt/maven/bin:$TEST_DIR/bin:/usr/bin:/bin")
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
+expect_plan "toolchain $TEST_DIR/opt/maven (3.9.9, "
+expect_plan "installed from archive.apache.org"
+expect_plan "toolchain $TEST_HOME/.sdkman/candidates/gradle/8.5 (8.5, "
+expect_plan "installed from services.gradle.org"
+expect_plan "link      $TEST_HOME/.sdkman/candidates/gradle/current → $TEST_HOME/.sdkman/candidates/gradle/8.5 [java]"
+TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
+dockerfile="$(cat "$STATE/build/Dockerfile")"
+url=https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
+[[ $dockerfile == *"install-archive.sh $url sha512 $url.sha512 $TEST_DIR/opt/maven "*" -- bin/mvn lib/maven-core-3.9.9.jar"* ]] \
+  || fail "Maven is not installed from Apache's archive: $dockerfile"
+url=https://services.gradle.org/distributions/gradle-8.5-bin.zip
+[[ $dockerfile == *"install-archive.sh $url sha256 $url.sha256 $TEST_HOME/.sdkman/candidates/gradle/8.5 "*" -- bin/gradle lib/gradle-base-services-8.5.jar"* ]] \
+  || fail "Gradle is not installed from its distribution: $dockerfile"
+printf 'copy java tool gradle\n' >"$STATE/config"
+rm -f -- "$STATE/plan"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
+expect_plan "toolchain $TEST_HOME/.sdkman/candidates/gradle/8.5 (8.5) [java]  owned by you, as on the host; first on PATH; copied from the host, as .go-yolo/config asks"
+rm -rf -- "$STATE"
+TEST_ENV=()
+pass 'Java: Maven and Gradle on PATH are installed from their release archives, at the host'"'"'s versions'

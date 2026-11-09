@@ -4,7 +4,8 @@
 # One picked item per line, "mode catalog kind id"; `#` starts a comment:
 #
 #   image  go    toolchain  -                  the Go toolchain (installed in the image)
-#   image  go    tools      -                  the tools in GOBIN
+#   image  go    tool       gopls              a tool in GOBIN (built with go install)
+#   copy   go    tool       my-tool            ... copied from the host instead
 #   cache  go    cache      modules            the module cache (a project volume)
 #   mount  go    mount      goenv              the GOENV file (read-only)
 #   env    go    env        GOPRIVATE          a host environment variable
@@ -13,6 +14,10 @@
 #   image  host  tool       kotlin             a host command (its install directory)
 #   mount  host  mount      /home/me/notes     a host path (read-only)
 #   env    host  env        GITHUB_TOKEN       a host environment variable
+#
+# Modes: image (installed in the image from its source, or copied where no recipe knows how),
+# copy (copied from the host even where a recipe would install it), mount (read-only), cache (a
+# project volume), env.
 #
 # The config says *what*; versions are read from the host on every run. go-yolo.sh --setup
 # writes it (the setup picker, lib/setup.sh); editing it by hand works too. It is parsed, never
@@ -25,7 +30,7 @@
 # Sets: CONFIG_ITEMS  one "mode<TAB>catalog<TAB>kind<TAB>id" string per picked item
 #       CONFIG_OLD    the lines of an old-format config (empty for a new-format one)
 
-CONFIG_MODES="image mount cache env"
+CONFIG_MODES="image copy mount cache env"
 CONFIG_ITEMS=()
 CONFIG_OLD=()
 
@@ -64,6 +69,16 @@ picked() {
   local item
   for item in "${CONFIG_ITEMS[@]}"; do
     if [[ ${item#*$'\t'} == "$1"$'\t'"$2"$'\t'"$3" ]]; then return 0; fi
+  done
+  return 1
+}
+
+# picked_mode CATALOG KIND ID — print the mode the config picks that item with (image, copy, ...).
+picked_mode() {
+  local item mode rest
+  for item in "${CONFIG_ITEMS[@]}"; do
+    IFS=$'\t' read -r mode rest <<<"$item"
+    if [[ $rest == "$1"$'\t'"$2"$'\t'"$3" ]]; then printf '%s' "$mode"; return 0; fi
   done
   return 1
 }

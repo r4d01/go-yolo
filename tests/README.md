@@ -44,7 +44,7 @@ so files don't depend on each other; within a file the groups run in order.
 | stub | stands in for | driven by |
 |------|---------------|-----------|
 | `docker` | the Docker CLI: logs every call to `DOCKER_TEST_LOG` | `DOCKER_TEST_IMAGE_STATUS` (`0` every image exists, `1` none does, `built-on-build` only the built ones), `DOCKER_TEST_IMAGE_ID`, `DOCKER_TEST_IMAGES` and `DOCKER_TEST_VOLUMES` (`--prune`'s lists), `DPKG_BASE_FIXTURE` (the base image's packages), `DOCKER_TEST_RUN_SCRIPT=1` and `DOCKER_TEST_PARITY_SED` (`--parity`'s container side runs locally) |
-| `go` | `go env NAME...` (from the environment), `go version`, `go work edit -json` | `GOVERSION`, `GO_TEST_WORK_JSON` |
+| `go` | `go env NAME...` (from the environment), `go version`, `go version -m` (a fake binary's text is its build info), `go work edit -json` | `GOVERSION`, `GO_TEST_WORK_JSON` |
 | `apt-cache` | `apt-cache policy` | `APT_POLICY_FIXTURE` |
 | `dpkg-query` | the host's installed packages | `DPKG_HOST_FIXTURE` |
 | `dpkg` | `dpkg -S` (anything else goes to the real dpkg) | `DPKG_S_FIXTURE` |

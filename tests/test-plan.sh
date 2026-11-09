@@ -88,7 +88,7 @@ dry_run shell
 pass 'changes are shown as a diff; only build-time changes change the image'
 
 printf 'image host package ok\ninstall host package nope\n' >"$CONFIG"
-[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"$CONFIG:2: unknown mode 'install' (use one of: image mount cache env)"* ]] \
+[[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"$CONFIG:2: unknown mode 'install' (use one of: image copy mount cache env)"* ]] \
   || fail 'a bad config line was accepted'
 printf 'image nosuch thing x\n' >"$CONFIG"
 [[ $(launch_in "$TEST_HOME/project" --dry-run shell) == *"unknown catalog 'nosuch'"* ]] || fail 'a bad catalog was accepted'

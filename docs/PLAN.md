@@ -2,7 +2,7 @@
 
 ## Status (2026-11-09, branch `feature/project-images`)
 
-**Done** (pushed, 46 test groups and shellcheck passing):
+**Done** (48 test groups, `tests/docker.sh` and shellcheck passing):
 
 - Part 1: the launcher split into `lib/` modules, colors, `.go-yolo/` and the git-root rule, the
   plan with confirmation, base and project images, packages (never downgrading), CAs, locales,
@@ -13,22 +13,29 @@
 - Phase B (4.3): the setup picker (`--setup`, fzf or a numbered list) and the `mode catalog kind
   id` config; only picked items are planned; quieter confirmation (ask only on new exposure),
   plan summary, `--plan`, `[s]etup` at the prompt; the base image built without asking.
+- Phase C (4.4, not pushed yet): install from the source (3.12). Go from go.dev, Go tools with
+  `go install` in a build stage, Temurin JDKs from Adoptium, Maven and Gradle from their release
+  archives, each checked against the host's files; copies say why; the `copy` mode; `--parity`
+  compares installed toolchains and tools file by file.
 
 **Not yet tried by the user:** the interactive picker with a real fzf (the tests use a stub;
 the fzf binding syntax is checked). Feedback from that comes first.
 
 **To implement, in this order:**
 
-1. **Phase C (4.4): install from the source instead of copying** (D18, D19): the recipe format,
-   checked downloads, install steps as root or as the user; Go (go.dev tarball, tools via
-   `go install path@version`), Java (Temurin from Adoptium, Maven/Gradle distributions); copy as
-   the labelled fallback; `--parity` and the plan verify installed items against the host.
-2. **Phase D (4.5): Android** (SDK via `sdkmanager` at the host's versions, debug keystore).
-3. **Phase E (4.6): Arduino** (arduino-cli, cores and libraries at the host's versions).
-4. **Later (4.7):** Rust and Node (TBD: not on the host), AI-proposed recipes (3.11), devices
+1. **Phase D (4.5): Android** (SDK via `sdkmanager` at the host's versions, debug keystore).
+2. **Phase E (4.6): Arduino** (arduino-cli, cores and libraries at the host's versions).
+3. **Later (4.7):** Rust and Node (TBD: not on the host), AI-proposed recipes (3.11), devices
    (D21, TBD), and the decision on a Go rewrite of the launcher.
 
 Small open items found along the way:
+
+- Maven and Gradle distributions are only tested with fixtures: neither is on this host's PATH.
+  The JDK at `~/.jdks/openjdk-27` (openjdk.org build) has no recipe and stays a copy.
+- An item whose download or check fails stops the build with a hint to use the `copy` mode; an
+  automatic fallback to a copy (with a ⚠) would need a second build attempt.
+- Go tool builds re-download their modules on every rebuild of the build stage (no BuildKit
+  cache mount yet).
 
 - The picker offers Go and Java items in every project when the host has them (pre-selected only
   where the project hints at them); maybe hide catalogs without hints behind a "show all".
@@ -314,6 +321,42 @@ The host's artifact is the answer key, which turns "trust the AI" into "check th
 login, offline, or on a mismatch, the item stays a copy. The same verify-against-the-host step
 also helps when writing new catalogs.
 
+### 3.12 Recipes (as built in phase C)
+
+Two install methods in `lib/recipes.sh`, both at the host's path and with the host's owner:
+
+- **`download`**: a vendor archive (`scripts/install-archive.sh` in the base image) checked
+  against the checksum the vendor publishes, fetched from the vendor **while building** (the plan
+  needs no network); unpacked without its top directory; empty marker files the host has at the
+  top (Gradle's `provisioned.ok`, `.ready`) are recreated.
+- **`build`**: a file built in a separate build stage (`FROM project AS build`), as the user with
+  the host's `HOME`; only the file is copied into the final image, not what the build downloaded.
+
+**Checked against the host, byte for byte.** The item's value carries a hash of a few host
+files (`go1.27.0, 1db869c560a19357`); `scripts/verify.sh` recomputes it in the image and the
+build fails on a mismatch, telling you to use the `copy` mode. The host's files are the answer
+key: the vendor checksum guards the download, the host hash proves it is what the host has. The
+hash is part of the plan line, so a changed host file rebuilds.
+
+Tried on this host before building it: go.dev's `go1.27.0.linux-amd64.tar.gz` is identical to
+`/opt/go/1.27.0` (every file); `go install gopls@v0.23.0` and `dlv@v1.27.2` in a container give
+the host's binaries byte for byte, **but only with the host's GOROOT and GOMODCACHE paths**
+(the paths end up in the binary; other paths gave another hash). So a tool is built only when
+the toolchain is in the plan and the tool was built with the host's current Go; it gets the
+settings `go version -m` records (`CGO_ENABLED`, `CGO_*`, `GOARCH`, `GOAMD64`, ..., `-trimpath`,
+`-tags`). Adoptium's checksum for `jdk-25.0.3+9` matches the tarball Gradle downloaded.
+
+**Copies say why** (note flags): `copy-picked` (the `copy` mode), `no-recipe`, `local-build`
+(`(devel)`, `vcs=`, replaced modules), `other-go=goX`, `custom-build` (`-ldflags`, quoted
+values, ...), `private-module` (GOPRIVATE/GONOPROXY), `no-go` (toolchain not picked),
+`renamed`, `not-go-binary`.
+
+**The `copy` mode** in `.go-yolo/config` (instead of `image`) forces a copy; `--setup` keeps a
+picked item's mode. (3.4's "options after the id" didn't work: ids can contain spaces.)
+
+**The Go `tools` item became one `tool` item per binary.** An old `image go tools -` pick still
+means every tool in GOBIN, and the picker shows it so it can be replaced by single picks.
+
 ## 4. Phases
 
 Part 2's phases each leave go-yolo working. Each updates the README and the tests.
@@ -389,7 +432,14 @@ Done when: a new Go project and a new Gradle project are set up through the pick
 without fzf), the result matches part 1's for the same picks, and a host upgrade of a picked item
 rebuilds without a prompt.
 
-### 4.4 Phase C: install recipes for Go and Java (D18, D19)
+### 4.4 Phase C: install recipes for Go and Java (D18, D19) — done
+
+As built: 3.12. Checked on this host with fresh Go and Gradle scratch projects: Go go1.27.0 from
+go.dev, gopls and dlv rebuilt byte for byte, `--parity` all 52 probes matching, `go run` with
+`--net none`, the host's `~/go` untouched; the Gradle project's JDK 25 toolchain (Temurin from
+Adoptium, recognised by Gradle without provisioning it again) runs `./gradlew run` online and
+then with `--net none`; `--parity` matches it file by file (the only differences: the host's apt
+JDK 21 is behind the archive, the plan's ⚠).
 
 - `lib/`: the recipe format, checked downloads (the vendor's checksum or signature), install steps
   as root or as the user (3.7), copy as the labelled fallback.

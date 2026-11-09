@@ -43,3 +43,27 @@ for scenario in none:vibe none:shell allowlist:shell; do
     "$1" "${cmd[@]}"
   [[ ! -e $TEST_DIR/root-shadow ]] || { printf 'FAIL: executable shadow ran as root\n' >&2; exit 1; }
 done
+
+# The install scripts of the project images (lib/recipes.sh), with file:// URLs instead of a
+# vendor: an archive checked against its checksum, unpacked as you, markers made, and the result
+# checked against the host's files; a wrong checksum and a file that isn't the host's both fail.
+mkdir -p "$TEST_DIR/archive/sdk-1.0/bin" "$TEST_DIR/archive/sdk-1.0/legal" "$TEST_DIR/host-sdk/bin"
+printf 'sdk 1.0\n' | tee "$TEST_DIR/archive/sdk-1.0/bin/sdk" >"$TEST_DIR/host-sdk/bin/sdk"
+ln -s ../bin/sdk "$TEST_DIR/archive/sdk-1.0/legal/LICENSE"
+printf 'provisioned.ok\nlegal/LICENSE\n' >"$TEST_DIR/empty.list"
+tar -czf "$TEST_DIR/sdk.tar.gz" -C "$TEST_DIR/archive" sdk-1.0
+(cd "$TEST_DIR" && sha256sum sdk.tar.gz >sdk.tar.gz.sha256 && printf '%064d  sdk.tar.gz\n' 0 >bad.sha256)
+hash="$(cd "$TEST_DIR/host-sdk" && sha256sum bin/sdk | sha256sum | cut -c1-16)"
+try_install() {
+  docker run --rm --network none --user "$TEST_UID:$TEST_GID" --entrypoint bash \
+    --mount "type=bind,source=$TEST_DIR,target=/srv/test,readonly" "$1" -c "
+      /opt/go-yolo/scripts/install-archive.sh file:///srv/test/sdk.tar.gz sha256 file:///srv/test/$2 /tmp/sdk $3 --empty /srv/test/empty.list -- bin/sdk \
+      && [[ -f /tmp/sdk/provisioned.ok && ! -L /tmp/sdk/legal/LICENSE && ! -s /tmp/sdk/legal/LICENSE ]] \
+      && [[ \$(stat -c %u /tmp/sdk/bin/sdk) == $TEST_UID ]]"
+}
+try_install "$1" sdk.tar.gz.sha256 "$hash" || { printf 'FAIL: install-archive.sh did not install a good archive\n' >&2; exit 1; }
+if try_install "$1" bad.sha256 "$hash" >/dev/null 2>&1; then printf 'FAIL: install-archive.sh took a wrong checksum\n' >&2; exit 1; fi
+if try_install "$1" sdk.tar.gz.sha256 0000000000000000 >/dev/null 2>&1; then
+  printf "FAIL: install-archive.sh took files that aren't the host's\n" >&2; exit 1
+fi
+printf 'ok - install-archive.sh checks the checksum and the host files, and installs as you\n'

@@ -9,25 +9,25 @@ plan_cert() {
   plan_add cert host copy "$path" "$(sha256sum <"$path" | cut -c1-8)"
 }
 
-# plan_copy KIND GROUP DIR VALUE [FLAGS] — copy host directory DIR into the image at the same path,
+# plan_copy KIND GROUP DIR VALUE FLAGS — copy host directory DIR into the image at the same path,
 # owned as on the host: by root, or by you (then `go install` and the like work there too, but
-# their results don't outlive the container). KIND is what it is (toolchain, tools); VALUE
-# shows a change (a version, or dir_fingerprint). A symlinked DIR is copied at its real path,
-# plus a link item for the symlink. FLAGS: on-path puts DIR/bin on PATH (for a toolchain).
+# their results don't outlive the container). This is the fallback for items no recipe installs
+# (lib/recipes.sh). KIND is what it is (toolchain, tools); VALUE shows a change (a version, or
+# dir_fingerprint). A symlinked DIR is copied at its real path, plus a link item for the symlink.
+# FLAGS: why it is a copy (no-recipe, copy-picked, ...), and on-path to put DIR/bin on PATH.
 plan_copy() {
-  local kind=$1 group=$2 dir=$3 value=$4 extra=${5:--} real flags=-
-  real="$(realpath -- "$dir")"
-  if is_system_dir "$real"; then
-    die "refusing to copy $dir into the image: it is a system directory, your home directory or one of its parents"
-  fi
-  if is_under "$PROJECT_DIR" "$real"; then
-    die "refusing to copy $dir into the image: it contains the project"
-  fi
-  if plan_has "$kind" "$real"; then return 0; fi
-  if [[ $(stat -c %u -- "$real") == "$HOST_UID" ]]; then flags=user-owned; fi
-  if [[ $extra != - ]]; then flags="$(add_flag "$flags" "$extra")"; fi
-  plan_add "$kind" "$group" copy "$real" "$value" "$flags"
-  if [[ $real != "$(realpath -ms -- "$dir")" ]]; then plan_add link "$group" link "$dir" "$real"; fi
+  local kind=$1 group=$2 dir=$3 value=$4 flags=$5
+  install_target "$kind" "$group" "$dir" || return 0
+  plan_add "$kind" "$group" copy "$TARGET" "$value" "$(owner_flags "$TARGET" "$flags")"
+}
+
+# first_file PATH... — print the first PATH that is a file (e.g. of a glob); fail if none is.
+first_file() {
+  local path
+  for path in "$@"; do
+    if [[ -f $path ]]; then printf '%s' "$path"; return 0; fi
+  done
+  return 1
 }
 
 # dir_fingerprint DIR — "N files, HASH": changes when a file is added, removed or changed.
@@ -62,17 +62,18 @@ plan_cache() {
   plan_add cache "$group" volume "$path" "$name"
 }
 
-# plan_tool GROUP NAME — the host's install of command NAME: its apt packages, or its install
-# directory (the parent of the bin/ that holds NAME), copied and put on PATH. An SDKMAN-style
-# "current" symlink is kept as a link.
+# plan_tool GROUP NAME [MODE [RECIPE]] — the host's install of command NAME: its apt packages, or
+# its install directory (the parent of the bin/ that holds NAME), put on PATH: installed by
+# function RECIPE (called with the directory; it fails if it doesn't know the install), else (or
+# with MODE copy) copied. An SDKMAN-style "current" symlink is kept as a link.
 plan_tool() {
-  local group=$1 name=$2 bin real home owners
+  local group=$1 name=$2 mode=${3:-image} recipe=${4:-} bin real home owners
   if ! bin="$(command -v -- "$name" 2>/dev/null)" || [[ $bin != /* ]]; then
     plan_add tools "$group" skip "$name" - not-on-path
     return 0
   fi
   real="$(readlink -f -- "$bin")"
-  if owners="$(apt_owners "$real")"; then
+  if [[ $mode != copy ]] && owners="$(apt_owners "$real")"; then
     # shellcheck disable=SC2086 # one word per package
     plan_packages "$group" $owners
     return 0
@@ -87,7 +88,11 @@ plan_tool() {
     plan_add tools "$group" skip "$name" - not-in-bin-dir
     return 0
   fi
-  plan_copy toolchain "$group" "$home" "$(basename -- "$(realpath -- "$home")")" on-path
+  if [[ $mode == copy ]]; then
+    plan_copy toolchain "$group" "$home" "$(basename -- "$(realpath -- "$home")")" on-path,copy-picked
+  elif [[ -z $recipe ]] || ! "$recipe" "$home"; then
+    plan_copy toolchain "$group" "$home" "$(basename -- "$(realpath -- "$home")")" on-path,no-recipe
+  fi
 }
 
 # plan_domain GROUP HOST — allow HOST with --net allowlist.

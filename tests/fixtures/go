@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 # Stub go:
-#   go env NAME...         prints $NAME for each name, one per line (like go env)
+#   go env NAME...         prints $NAME for each name, one per line (like go env); GOHOSTOS and
+#                          GOHOSTARCH default to linux and amd64
 #   go version             prints go version $GOVERSION (default go1.99.0)
+#   go version -m FILE     a fake Go binary is a text file: its first line the Go that built it,
+#                          the rest the build info (tab-separated, as go version -m prints it);
+#                          prints "FILE: <first line>" and the rest; an empty file isn't a Go binary
 #   go work edit -json F   prints $GO_TEST_WORK_JSON
 set -euo pipefail
 case ${1:-} in
   env)
     shift
-    GOVERSION=${GOVERSION:-go1.99.0}
+    GOVERSION=${GOVERSION:-go1.99.0} GOHOSTOS=${GOHOSTOS:-linux} GOHOSTARCH=${GOHOSTARCH:-amd64}
     for name in "$@"; do printf '%s\n' "${!name-}"; done
     ;;
-  version) printf 'go version %s linux/amd64\n' "${GOVERSION:-go1.99.0}" ;;
+  version)
+    if [[ ${2:-} == -m ]]; then
+      [[ -s $3 ]] || { printf '%s: could not read Go build info\n' "$3" >&2; exit 1; }
+      printf '%s: %s\n' "$3" "$(head -n 1 -- "$3")"
+      tail -n +2 -- "$3"
+    else
+      printf 'go version %s linux/amd64\n' "${GOVERSION:-go1.99.0}"
+    fi
+    ;;
   work) printf '%s\n' "${GO_TEST_WORK_JSON:-{\}}" ;;
   *) exit 2 ;;
 esac

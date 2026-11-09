@@ -45,6 +45,8 @@ source "$REPO_DIR/lib/plan.sh"
 source "$REPO_DIR/lib/apt.sh"
 # shellcheck source=lib/items.sh
 source "$REPO_DIR/lib/items.sh"
+# shellcheck source=lib/recipes.sh
+source "$REPO_DIR/lib/recipes.sh"
 # shellcheck source=lib/confirm.sh
 source "$REPO_DIR/lib/confirm.sh"
 # shellcheck source=lib/setup.sh

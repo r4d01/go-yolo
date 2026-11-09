@@ -18,6 +18,7 @@ done <<'EOF'
 base         10    1      {name}
 toolchain    11    1      {name} ({value})
 tools        12    1      {name} ({value})
+tool         12    1      {name} ({value})
 link         13    1      {name} → {value}
 package      14    1      {name}={value}
 parity       15    0      {name}={value}
@@ -37,6 +38,17 @@ done <<'EOF'
 on-path                behaviour  first on PATH
 derived                behaviour  set by go-yolo
 user-owned             behaviour  owned by you, as on the host
+download               note       installed from %v, checked against its checksum and the host's files
+built                  note       built in the image, checked against the host's file
+copy-picked            note       copied from the host, as .go-yolo/config asks
+no-recipe              note       copied from the host: no recipe knows how to install it
+local-build            note       copied from the host: built from local sources
+custom-build           note       copied from the host: built with settings go install can't repeat
+other-go               note       copied from the host: built with %v, not with the host's Go
+private-module         note       copied from the host: a private module (GOPRIVATE), which the build can't fetch
+no-go                  note       copied from the host: building it needs the Go toolchain, which isn't picked
+renamed                note       copied from the host: renamed after it was installed
+not-go-binary          note       copied from the host: not a Go binary
 hidden                 note       value not shown
 empty                  note       empty value
 not-set                warning    picked, but not set on the host: not passed
