@@ -1,8 +1,45 @@
 # go-yolo: project images plan
 
-Status: 2026-11-09. Part 1 (detection-based project images with Go and Java) is implemented on
-`feature/project-images`. Part 2 (this plan's next phases) reworks it: **you pick** what goes into
-the container, and go-yolo **installs** it from its source instead of copying host files.
+## Status (2026-11-09, branch `feature/project-images`)
+
+**Done** (pushed, 46 test groups and shellcheck passing):
+
+- Part 1: the launcher split into `lib/` modules, colors, `.go-yolo/` and the git-root rule, the
+  plan with confirmation, base and project images, packages (never downgrading), CAs, locales,
+  umask, time zone, base-vs-host parity notes, `--prune`, `--parity`, the Go and Java catalogs.
+- Phase A (4.2): caches in per-project Docker volumes, nothing shared with the host's caches;
+  `lib/plan.sh` split, item kinds and flags in tables; `packs/` → `catalogs/`, catalogs and agents
+  found from their files; tests split per area.
+- Phase B (4.3): the setup picker (`--setup`, fzf or a numbered list) and the `mode catalog kind
+  id` config; only picked items are planned; quieter confirmation (ask only on new exposure),
+  plan summary, `--plan`, `[s]etup` at the prompt; the base image built without asking.
+
+**Not yet tried by the user:** the interactive picker with a real fzf (the tests use a stub;
+the fzf binding syntax is checked). Feedback from that comes first.
+
+**To implement, in this order:**
+
+1. **Phase C (4.4): install from the source instead of copying** (D18, D19): the recipe format,
+   checked downloads, install steps as root or as the user; Go (go.dev tarball, tools via
+   `go install path@version`), Java (Temurin from Adoptium, Maven/Gradle distributions); copy as
+   the labelled fallback; `--parity` and the plan verify installed items against the host.
+2. **Phase D (4.5): Android** (SDK via `sdkmanager` at the host's versions, debug keystore).
+3. **Phase E (4.6): Arduino** (arduino-cli, cores and libraries at the host's versions).
+4. **Later (4.7):** Rust and Node (TBD: not on the host), AI-proposed recipes (3.11), devices
+   (D21, TBD), and the decision on a Go rewrite of the launcher.
+
+Small open items found along the way:
+
+- The picker offers Go and Java items in every project when the host has them (pre-selected only
+  where the project hints at them); maybe hide catalogs without hints behind a "show all".
+- The "add more" step is a single free-text prompt; it could list what can be added (host
+  packages, commands on PATH).
+- A few files (`settings.xml`, `.properties`, `go work edit -json`) are parsed with `sed`;
+  fragile (a commented-out `<localRepository>` is read wrongly), an argument for the Go rewrite.
+- The fzf editing of the plan from part 1 (3.8) is covered by `[s]etup`; the agent picker
+  (`go-yolo.sh` without an agent) isn't built.
+
+The sections below are the design; phases marked done describe what was built.
 
 ## 1. Goal
 
