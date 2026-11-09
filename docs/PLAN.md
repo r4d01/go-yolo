@@ -21,6 +21,9 @@
 **Not yet tried by the user:** the interactive picker with a real fzf (the tests use a stub;
 the fzf binding syntax is checked). Feedback from that comes first.
 
+**Next:** D23 / 3.13 (offer what the host doesn't have), built together with phase D (Android),
+which no longer needs an SDK on the host.
+
 **To implement, in this order:**
 
 1. **Phase D (4.5): Android** (SDK via `sdkmanager` at the host's versions, debug keystore).
@@ -96,6 +99,7 @@ images, `--parity`, `--prune`) and changes three things:
 | D19 | **Building the image may use the network** (downloads for D18). Running the container stays under `--net`. |
 | D20 | **Ask only when exposure changes.** A full confirmation is needed when the selection changes, or when something new is exposed to the container (a mount, an env variable, a secret-looking file, a device). Version changes of picked items and `parity` drift are shown in one banner line and rebuilt without asking. |
 | D21 | **Devices** (Arduino uploads, adb over USB): TBD. If they come, then opt-in per project with a ⚠ (the agent could flash a board). |
+| D23 | **(3.13) Offer every catalog, not only what the host has.** Items the host has are offered at the host's version and recommended (D2 holds for them). A catalog the host lacks (Android SDK, Go, Rust, Node, Arduino, ...) can still be picked, at a version you choose, saved in the config; it is marked ⚠ *not on the host* in the plan, because nothing proves a build there matches the host. Amends D2 and D14. |
 | D22 | **AI-proposed recipes: later, optional** (see 3.11). The AI only proposes; go-yolo verifies the result against the host before offering it, and saves accepted recipes. |
 
 ## 3. Design
@@ -356,6 +360,54 @@ picked item's mode. (3.4's "options after the id" didn't work: ids can contain s
 
 **The Go `tools` item became one `tool` item per binary.** An old `image go tools -` pick still
 means every tool in GOBIN, and the picker shows it so it can be replaced by single picks.
+
+### 3.13 Items the host doesn't have (D23)
+
+Why: a project may need an ecosystem the host doesn't have (an Android SDK removed from the host,
+Rust for a contributor's tool). Today the picker can't offer it at all, and D14 blocks Rust and
+Node until the host has them.
+
+**Picker.** Every catalog has two kinds of candidates:
+
+```
+  go       ★ toolchain go1.27.0 (on the host, /opt/go/1.27.0) · install: go.dev release
+  android  ○ SDK (not on the host) · pick: platform 36, build-tools 36.0.0 · install: sdkmanager
+  rust     ○ toolchain (not on the host) · pick a version: 1.91.0 (latest stable), 1.90.0, ...
+```
+
+- **★ on the host:** as now. The host's version, read on every run (D2); pre-selected when the
+  project hints at it (D17); checked against the host's files (3.12).
+- **○ not on the host:** never pre-selected, only a project hint marks it "suggested". Picking
+  one asks for the version, from the vendor's list (newest stable first; a project hint, such as
+  `go.mod`'s `go` line, `compileSdk`, or `rust-toolchain.toml`, is offered first). The version is
+  saved in the config, the one exception to "the config says what" (there is no host to read it
+  from): `image  rust  toolchain  -  1.91.0`.
+- **Path and owner:** the ecosystem's default install location for this user, as if it were
+  installed on the host (`/usr/local/go`, `~/Android/Sdk`, `~/.rustup` + `~/.cargo`,
+  `~/.arduino15`), so the host can later install it the same way and match.
+- **When the host gets it later:** the item becomes ★ on the next `--setup`, and the picker
+  offers to switch to the host's version.
+
+**Plan.** Such an item gets a ⚠ `not-on-host` ("not on the host: a build that works here may
+not work there"), is checked only against the vendor's checksum (no host files to compare), and
+D20 counts picking one as an exposure change. `--parity` reports its probes as *container only*
+instead of as differences.
+
+**Versions from the vendor** (the catalog lists them, cached for a day):
+`go.dev/dl/?mode=json`, `api.adoptium.net/v3/info/available_releases`, `sdkmanager --list`
+(run in a container: the host has no sdkmanager), `static.rust-lang.org` channel manifests,
+`nodejs.org/dist/index.json`, arduino-cli's GitHub releases.
+
+**Android licences.** On the host they come from the host's `~/Android/Sdk/licenses`. Without a
+host SDK, the picker shows the licences and asks you to accept them (`sdkmanager --licenses`
+needs your yes; go-yolo never accepts them for you).
+
+**Decided** (2026-11-09):
+
+1. A non-host item's version is **pinned in the config** (reproducibility is a key feature);
+   `--setup` changes it. A new release never rebuilds by itself.
+2. **One toolchain per ecosystem**: no non-host toolchain next to a host one.
+3. Order: Android (phase D, now without needing a host SDK), then Rust and Node, then Arduino.
 
 ## 4. Phases
 
