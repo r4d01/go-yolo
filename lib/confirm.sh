@@ -255,14 +255,15 @@ confirm_plan() {
 
     while true; do
       if plan_has_warnings; then warn "the plan has warnings (⚠); check them before you go on"; fi
-      read -r -p "go-yolo: use this plan? [y]es [n]o [p]lan [e]dit config [d]ockerfile: " answer
+      read -r -p "go-yolo: use this plan? [y]es [n]o [p]lan [s]etup [e]dit config [d]ockerfile: " answer
       case $answer in
         y|yes) save_plan; return 0 ;;
         n|no|'') note "aborted; nothing was built"; exit 1 ;;
         p|plan) show_plan ;;
+        s|setup) run_setup ask; save_setup; resolve_plan; break ;;
         e|edit) edit_config; load_config; resolve_plan; break ;;
         d|dockerfile) project_dockerfile >&2 ;;
-        *) note "y: build with this plan · n: stop · p: show every item · e: edit .go-yolo/config · d: show the Dockerfile" ;;
+        *) note "y: build with this plan · n: stop · p: show every item · s: change the picks (e.g. leave out a ⚠ item) · e: edit .go-yolo/config · d: show the Dockerfile" ;;
       esac
     done
   done

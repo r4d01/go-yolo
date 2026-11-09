@@ -132,8 +132,7 @@ run_setup() {
 # Make sure the project has a setup: run the picker for --setup, or when there is no config yet
 # (or an old one). Without a terminal, --yes takes the suggestions; a dry run previews them.
 ensure_setup() {
-  local file interactive=0
-  file="$(config_file)"
+  local interactive=0
   load_config
   if ((!SETUP)) && have_config; then return 0; fi
 
@@ -154,7 +153,13 @@ ensure_setup() {
     die "this project has no setup yet: run go-yolo.sh --setup in a terminal (or pass --yes to take the suggested picks)"
   fi
 
-  if ((DRY_RUN)); then return 0; fi
+  if ((!DRY_RUN)); then save_setup; fi
+}
+
+# Save CONFIG_ITEMS in .go-yolo/config (keeping an old-format config as config.old).
+save_setup() {
+  local file
+  file="$(config_file)"
   if ((${#CONFIG_OLD[@]})); then cp -- "$file" "$file.old"; fi
   save_config "${CONFIG_ITEMS[@]}"
   CONFIG_OLD=()

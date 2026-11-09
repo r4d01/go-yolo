@@ -65,8 +65,19 @@ if command -v script >/dev/null 2>&1; then
   TEST_ENV=(FZF_TEST_OLD=1)
   output="$(in_terminal '' '' -- --setup --yes)"
   [[ $(grep -v '^#' "$CONFIG") == 'env    host     env        FOO_SETUP' ]] || fail "the picks changed: $(cat "$CONFIG")"
-  rm -f -- "$TEST_DIR/bin/fzf"
   TEST_ENV=()
   pass '--setup starts from the saved picks'
+
+  # [s] at the plan prompt opens the picker on the current picks; the plan is shown again.
+  rm -f -- "$STATE/plan"
+  printf 'image go toolchain -\ncache go cache modules\ncache go cache build\n' >"$CONFIG"
+  TEST_ENV=(FZF_TEST_PICK='build cache')
+  output="$(in_terminal s '' y -- shell -c true)"
+  [[ $(grep -v '^#' "$CONFIG") == 'cache  go       cache      build' ]] || fail "[s] did not change the picks: $(cat "$CONFIG")"
+  [[ $output == *'pick what this project'* ]] || fail "[s] did not open the picker: $output"
+  grep -q '^toolchain	' "$STATE/plan" && fail 'the plan still has the unpicked toolchain'
+  rm -f -- "$TEST_DIR/bin/fzf"
+  TEST_ENV=()
+  pass '[s] at the plan prompt changes the picks and shows the plan again'
 fi
 rm -rf -- "$STATE" "$TEST_HOME/project/go.mod"

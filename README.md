@@ -254,10 +254,11 @@ go-yolo: plan for /home/me/src/myapp (new; go-yolo.sh --setup changes the picks)
     parity    tzdata=2026f-0+deb13u1  ⚠ the base image has this newer version, the host has 2026e-0+deb13u1 (apt upgrade the host to match)
 go-yolo: every item: go-yolo.sh --plan (or [p] below)
 go-yolo: warning: the plan has warnings (⚠); check them before you go on
-go-yolo: use this plan? [y]es [n]o [p]lan [e]dit config [d]ockerfile:
+go-yolo: use this plan? [y]es [n]o [p]lan [s]etup [e]dit config [d]ockerfile:
 ```
 
-`p` (or `--plan` on the command line) shows every item; `e` opens `.go-yolo/config` in
+`p` (or `--plan` on the command line) shows every item; `s` opens the setup picker on the
+current picks (to leave out an item with a warning, say) and shows the plan again; `e` opens `.go-yolo/config` in
 `$VISUAL`/`$EDITOR` and shows the plan again; `d` shows the generated Dockerfile (also kept in
 `.go-yolo/build/Dockerfile`). Enter or `n` stops without building.
 

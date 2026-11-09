@@ -326,7 +326,7 @@ Done when: all tests pass (with the cache tests rewritten for volumes) and the p
 fixtures are identical apart from the cache and seed items; a Go and a Gradle project build with
 their caches in volumes, a second run reuses them, and nothing on the host is read or written.
 
-### 4.3 Phase B: selection (D17, D20) — done except the exclude-from-prompt
+### 4.3 Phase B: selection (D17, D20) — done
 
 - `lib/config.sh`: the selection format (3.4), replacing `extra`/`exclude`. A part-1 config is
   converted once (each `extra` becomes a picked item, each `exclude` an unpicked one). — done;
@@ -342,7 +342,9 @@ their caches in volumes, a second run reuses them, and nothing on the host is re
   item the host lacks is a `gone` warning.
 - Quieter confirmation (D20): ask only on selection or exposure changes; summary by default,
   `--plan` for details; exclude a ⚠ item from the prompt; the base image built without asking.
-  — done except the exclude-from-prompt (B3): an item counts as new exposure if it wasn't in the
+  — done. Instead of "exclude a ⚠ item", the prompt has `[s]etup`: the picker on the current
+  picks, then the plan again (a plan item doesn't map one-to-one to a pick, e.g. a JDK's apt
+  packages, and parity notes can't be excluded at all). An item counts as new exposure if it wasn't in the
   confirmed plan or was left out there (the base image and parity notes never count); anything
   else is taken with one note line.
 
