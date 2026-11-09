@@ -70,13 +70,12 @@ go_resolve() {
 # The toolchain: from apt if GOROOT belongs to apt packages (e.g. /usr/lib/go-1.24), else a copy.
 go_plan_toolchain() {
   local goroot=$1 version=$2 owners
-  if owners="$(dpkg -S -- "$goroot" 2>/dev/null | head -n 1)"; then
-    owners=${owners%%: *}
-    # shellcheck disable=SC2086 # "golang-1.24-go, golang-1.24-src" → two package names
-    plan_packages go ${owners//,/}
-    plan_add toolchain go apt "$goroot" "$version"
+  if owners="$(apt_owners "$goroot")"; then
+    # shellcheck disable=SC2086 # one word per package
+    plan_packages go $owners
+    plan_add toolchain go apt "$goroot" "$version" on-path
   else
-    plan_copy toolchain go "$goroot" "$version"
+    plan_copy toolchain go "$goroot" "$version" on-path
   fi
 }
 

@@ -155,13 +155,13 @@ plan_cert() {
   plan_add cert host copy "$path" "$(sha256sum <"$path" | cut -c1-8)"
 }
 
-# plan_copy KIND GROUP DIR VALUE — copy host directory DIR into the image at the same path,
+# plan_copy KIND GROUP DIR VALUE [FLAGS] — copy host directory DIR into the image at the same path,
 # owned as on the host: by root, or by you (then `go install` and the like work there too, but
 # their results don't outlive the container). KIND is what it is (toolchain, tools); VALUE
 # shows a change (a version, or dir_fingerprint). A symlinked DIR is copied at its real path,
-# plus a link item for the symlink.
+# plus a link item for the symlink. FLAGS: on-path puts DIR/bin on PATH (for a toolchain).
 plan_copy() {
-  local kind=$1 group=$2 dir=$3 value=$4 real flags=-
+  local kind=$1 group=$2 dir=$3 value=$4 extra=${5:-} real flags=-
   real="$(realpath -- "$dir")"
   if is_system_dir "$real"; then
     die "refusing to copy $dir into the image: it is a system directory, your home directory or one of its parents"
@@ -173,7 +173,11 @@ plan_copy() {
     plan_add "$kind" "$group" skip "$real" "$value" excluded
     return 0
   fi
+  if plan_has "$kind" "$real"; then return 0; fi
   if [[ $(stat -c %u -- "$real") == "$HOST_UID" ]]; then flags=user-owned; fi
+  if [[ -n $extra && $extra != - ]]; then
+    if [[ $flags == - ]]; then flags=$extra; else flags+=",$extra"; fi
+  fi
   plan_add "$kind" "$group" copy "$real" "$value" "$flags"
   if [[ $real != "$(realpath -ms -- "$dir")" ]]; then plan_add link "$group" link "$dir" "$real"; fi
 }
@@ -195,20 +199,68 @@ plan_mount() {
     return 0
   fi
   validate_mount_path "$path"
-  if [[ -f $path ]]; then value="$(sha256sum <"$path" | cut -c1-8)"; fi
+  if [[ -f $path ]]; then
+    value="$(sha256sum <"$path" | cut -c1-8)"
+    # Repository credentials in settings.xml, tokens in gradle.properties or .npmrc, ...
+    if grep -qiE 'password|passwd|secret|token|credential|_auth' -- "$path" 2>/dev/null; then
+      if [[ $flags == - ]]; then flags=may-hold-secrets; else flags+=",may-hold-secrets"; fi
+    fi
+  fi
   plan_add mount "$group" ro "$path" "$value" "$flags"
 }
 
-# plan_cache GROUP PATH NAME — the project cache .go-yolo/cache/NAME, read-write at the host's
-# cache path PATH. The host's own cache at PATH is never used.
+# plan_cache GROUP PATH NAME [from-host] — the project cache .go-yolo/cache/NAME, read-write at
+# the host's cache path PATH. The host's own cache at PATH is never used; with from-host, it is
+# copied into the new project cache once, when that is created (for caches a tool must be able to
+# write to, so a read-only seed won't do, e.g. the Gradle wrapper's distributions).
 plan_cache() {
-  local group=$1 path=$2 name=$3
+  local group=$1 path=$2 name=$3 flags=${4:--}
   if config_has exclude cache "$path"; then
     plan_add cache "$group" skip "$path" "$name" excluded
     return 0
   fi
   validate_mount_path "$path"
-  plan_add cache "$group" rw "$path" "$name"
+  if [[ $flags == from-host && ! -d $path ]]; then flags=-; fi
+  plan_add cache "$group" rw "$path" "$name" "$flags"
+}
+
+# apt_owners PATH — print the apt packages that own PATH on the host, one per line (without a
+# ":amd64"-style suffix); fail if none does.
+apt_owners() {
+  local owners
+  owners="$(dpkg -S -- "$1" 2>/dev/null | head -n 1)" || return 1
+  [[ -n $owners ]] || return 1
+  owners=${owners%%: *}            # "openjdk-21-jre:amd64, openjdk-21-jre-headless:amd64"
+  owners=${owners//, /$'\n'}
+  sed 's/:[a-z0-9]*$//' <<<"$owners"
+}
+
+# plan_tool GROUP NAME — the host's install of command NAME: its apt packages, or its install
+# directory (the parent of the bin/ that holds NAME), copied and put on PATH. An SDKMAN-style
+# "current" symlink is kept as a link.
+plan_tool() {
+  local group=$1 name=$2 bin real home owners
+  if ! bin="$(command -v -- "$name" 2>/dev/null)" || [[ $bin != /* ]]; then
+    plan_add tools "$group" skip "$name" - not-on-path
+    return 0
+  fi
+  real="$(readlink -f -- "$bin")"
+  if owners="$(apt_owners "$real")"; then
+    # shellcheck disable=SC2086 # one word per package
+    plan_packages "$group" $owners
+    return 0
+  fi
+  # The install directory is the real one (/opt/kotlin for /opt/kotlin/bin/kotlin), unless the
+  # path on PATH goes through a link to it, like SDKMAN's .../gradle/current/bin/gradle.
+  home=${real%/bin/*}
+  if [[ $bin == */bin/* && $(realpath -m -- "${bin%/bin/*}") == "$home" ]]; then
+    home=${bin%/bin/*}
+  fi
+  if [[ $home == "$real" ]] || is_system_dir "$home"; then
+    plan_add tools "$group" skip "$name" - not-in-bin-dir
+    return 0
+  fi
+  plan_copy toolchain "$group" "$home" "$(basename -- "$(realpath -- "$home")")" on-path
 }
 
 # plan_seed GROUP PATH NAME — the host's cache PATH, read-only as /var/cache/go-yolo/seed/NAME,
@@ -407,6 +459,11 @@ plan_note() {
     not-in-archive) printf "⚠ not installed: the host's version isn't in the %s archive (third-party repository, or apt upgrade the host)" "$HOST_ID" ;;
     not-found) printf '⚠ no such apt package' ;;
     user-owned) printf 'owned by you, as on the host' ;;
+    on-path) printf 'first on PATH' ;;
+    from-host) printf "starts as a copy of the host's" ;;
+    may-hold-secrets) printf '⚠ may hold credentials: the agent can read it' ;;
+    not-on-path) printf "⚠ not on the host's PATH: neither side has it" ;;
+    not-in-bin-dir) printf "⚠ not copied: it isn't installed as <dir>/bin/<name>" ;;
     outside-repo) printf '⚠ outside the repository: read-only in the container' ;;
     no-locales-package) printf "⚠ not generated: the locales package isn't in the plan" ;;
     unsupported-locale) printf "⚠ not generated: not in the host's list of supported locales" ;;

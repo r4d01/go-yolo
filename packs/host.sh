@@ -5,6 +5,7 @@
 #   parity    base image packages whose version differs from the host's, as warnings: the
 #             base image installs the archive's current versions, and it never downgrades
 #   packages  the `extra package` items from .go-yolo/config, at the host's versions
+#   extras    `extra tool NAME` (a host command's install) and `extra mount PATH` (read-only)
 #             (language packs add the packages a project's native code needs)
 #   certs     extra CA certificates trusted by the host (/usr/local/share/ca-certificates)
 #   locales   the locales of LANG, LC_ALL and LC_* (with the locales package to generate them)
@@ -19,6 +20,11 @@ host_resolve() {
 
   # shellcheck disable=SC2046 # one word per package name
   plan_packages extra $(config_extras package)
+  if [[ -n ${GOYOLO_TOOLS:-} ]]; then
+    warn "GOYOLO_TOOLS is no longer used; list host commands as 'extra tool NAME' in .go-yolo/config (Java, Maven and Gradle come with the java items)"
+  fi
+  while IFS= read -r name; do plan_tool extra "$name"; done < <(config_extras tool)
+  while IFS= read -r name; do plan_mount extra "$name"; done < <(config_extras mount)
 
   while IFS= read -r -d '' cert; do
     plan_cert "$cert"

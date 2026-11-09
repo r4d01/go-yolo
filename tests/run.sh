@@ -6,16 +6,12 @@ TEST_DIR="$(mktemp -d /tmp/go-yolo-tests.XXXXXXXX)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
 TEST_HOME="$TEST_DIR/home"
 mkdir -p "$TEST_DIR/bin" "$TEST_HOME"/{bin,project/nested/deeper,go/pkg/mod,cache,toolchain,links,.gradle,.m2} \
-  "$TEST_DIR/jdk/bin" "$TEST_DIR/java-config" "$TEST_HOME/with spaces"
+  "$TEST_HOME/with spaces"
 cp "$REPO_DIR/tests/fixtures/"{go,docker,apt-cache,dpkg-query,dpkg,pkg-config} "$TEST_DIR/bin/"
 chmod +x "$TEST_DIR/bin/"{go,docker,apt-cache,dpkg-query,dpkg,pkg-config}
+cp "$REPO_DIR/tests/fixtures/apt-policy" "$TEST_DIR/apt-policy"   # tests may add packages
 mkdir -p "$TEST_DIR/ca/corp"
 printf 'not really a certificate\n' >"$TEST_DIR/ca/corp/root.crt"
-cp "$REPO_DIR/tests/fixtures/go" "$TEST_DIR/jdk/bin/java"
-chmod +x "$TEST_DIR/jdk/bin/java"
-cp "$TEST_DIR/jdk/bin/java" "$TEST_HOME/bin/java"
-cp "$REPO_DIR/tests/fixtures/os-release" "$TEST_DIR/java-config/security"
-ln -s "$TEST_DIR/java-config/security" "$TEST_DIR/jdk/security"
 ln -s "$TEST_HOME" "$TEST_HOME/links/home"
 ln -s /run "$TEST_HOME/links/run"
 ln -s "$TEST_HOME/project" "$TEST_HOME/links/home-hop"
@@ -29,13 +25,13 @@ launch() (
   cd "${LAUNCH_DIR:-$TEST_HOME/project}"
   env -i HOME="$TEST_HOME" PATH="$TEST_DIR/bin:/usr/bin:/bin" \
     GOYOLO_OS_RELEASE="$REPO_DIR/tests/fixtures/os-release" GOYOLO_QUIET=1 \
-    GOYOLO_TOOLS="${TEST_TOOLS-}" GOPROXY=https://proxy.example.com,direct \
+    GOPROXY=https://proxy.example.com,direct GOYOLO_JVM_DIR="$TEST_DIR/jvm" \
     GOYOLO_MOUNTS="${TEST_MOUNTS-}" GRADLE_USER_HOME="${TEST_GRADLE_HOME-$TEST_HOME/.gradle}" \
     JAVA_HOME="${TEST_JAVA_HOME-}" GOROOT="${TEST_GOROOT-$TEST_HOME/toolchain}" \
     GOPATH="${TEST_GOPATH-$TEST_HOME/go}" GOCACHE="${TEST_GOCACHE-$TEST_HOME/cache}" \
     GOMODCACHE="${TEST_GOMODCACHE-$TEST_HOME/go/pkg/mod}" GOENV=off \
     DOCKER_TEST_LOG="$TEST_DIR/docker.log" DOCKER_TEST_IMAGE_STATUS="${TEST_IMAGE_STATUS-0}" \
-    TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$REPO_DIR/tests/fixtures/apt-policy" \
+    TZ=Europe/Prague GOYOLO_CA_DIR="$TEST_DIR/ca" APT_POLICY_FIXTURE="$TEST_DIR/apt-policy" \
     DPKG_HOST_FIXTURE="${TEST_DPKG_HOST-}" DPKG_BASE_FIXTURE="$REPO_DIR/tests/fixtures/dpkg-base" \
     DPKG_S_FIXTURE="$TEST_DIR/dpkg-S" PC_PATH_FIXTURE="$TEST_DIR/pc" \
     DOCKER_TEST_IMAGES="$TEST_DIR/images" GOYOLO_LOCALES_SUPPORTED="$REPO_DIR/tests/fixtures/locales-supported" \
@@ -64,10 +60,6 @@ assert_mount() {
   for arg in "${ARGS[@]}"; do [[ $arg != "$expected" ]] || return 0; done
   fail "missing mount: $expected"
 }
-
-TEST_TOOLS=gradle TEST_GRADLE_HOME="$TEST_HOME" reject shell
-TEST_TOOLS=gradle TEST_GRADLE_HOME="$TEST_HOME/links/home" reject shell
-pass 'automatic mounts reject home directories, system roots, and symlink aliases'
 
 for path in /run /dev /proc /sys /run/lock /dev/null /proc/self/status /sys/kernel /var/run; do
   if [[ -e $path ]]; then reject --mount "$path" shell; fi
@@ -124,17 +116,10 @@ pass 'agent configuration mounts use the common safety checks'
 dry_run --mount "$TEST_HOME/with spaces" --mount "$TEST_HOME/.m2:ro" shell
 assert_mount "$TEST_HOME/with spaces" "$TEST_HOME/with spaces" ro
 assert_mount "$TEST_HOME/project" "$TEST_HOME/project" rw
-TEST_TOOLS='mvn gradle' dry_run --mount "$TEST_HOME/.m2:ro" --mount "$TEST_HOME/.gradle:ro" shell
+dry_run --mount "$TEST_HOME/.m2:ro" --mount "$TEST_HOME/.gradle:ro" shell
 assert_mount "$TEST_HOME/.m2" "$TEST_HOME/.m2" ro
 assert_mount "$TEST_HOME/.gradle" "$TEST_HOME/.gradle" ro
-pass 'normal mounts, spaces, and read-only cache overrides are preserved'
-
-TEST_TOOLS=java TEST_JAVA_HOME="$TEST_DIR/jdk" dry_run shell
-assert_mount "$TEST_DIR/jdk" "$TEST_DIR/jdk" ro
-assert_mount "$TEST_DIR/java-config" "$TEST_DIR/java-config" ro
-output="$(TEST_TOOLS=java TEST_JAVA_HOME="$TEST_HOME" launch --dry-run shell 2>&1)"
-[[ $output == *'not mounting java'* ]] || fail 'unsafe tool installation was not skipped with a warning'
-pass 'Java dependency directories mount safely and unsupported installations are skipped'
+pass 'normal mounts, spaces, and explicit read-only mounts are preserved'
 
 mkdir -p "$TEST_HOME/datasets"
 TEST_MOUNTS="$TEST_HOME/.m2"$'\n'"$TEST_HOME/datasets:rw" dry_run shell
@@ -477,6 +462,135 @@ expect_plan 'GOYOLO_GOPATH_MODE is no longer used'
 rm -rf -- "$STATE" "$GO_PROJECT/go.mod" "$GO_PROJECT/db.go" "$TEST_HOME/go.work"
 TEST_ENV=()
 pass 'Go: cgo pkg-config libraries, and a go.work outside the repository, are planned'
+
+# --- Java -------------------------------------------------------------------
+
+# JDKs: an apt one (the default java) with Debian's default-java link, an IntelliJ one, an
+# SDKMAN one with its "current" link, and one Gradle provisioned.
+new_jdk() {
+  mkdir -p "$1/bin"
+  cp "$REPO_DIR/tests/fixtures/go" "$1/bin/java"
+  chmod +x "$1/bin/java"
+  printf 'JAVA_VERSION="%s"\n' "$2" >"$1/release"
+}
+new_jdk "$TEST_DIR/jvm/java-21" 21.0.1
+ln -s java-21 "$TEST_DIR/jvm/default-java"
+new_jdk "$TEST_HOME/.jdks/openjdk-27" 27
+new_jdk "$TEST_HOME/.sdkman/candidates/java/17.0.9-tem" 17.0.9
+ln -s 17.0.9-tem "$TEST_HOME/.sdkman/candidates/java/current"
+new_jdk "$TEST_HOME/.gradle/jdks/eclipse_adoptium-25" 25.0.3
+mkdir -p "$TEST_HOME/.gradle/caches/modules-2" "$TEST_HOME/.gradle/wrapper/dists/gradle-9.6.0-bin"
+: >"$TEST_HOME/.gradle/wrapper/dists/gradle-9.6.0-bin/gradle-9.6.0-bin.zip.ok"
+printf 'systemProp.http.proxyPassword=hunter2\n' >"$TEST_HOME/.gradle/gradle.properties"
+printf 'openjdk-21-jre-headless:amd64: %s\ndefault-jre-headless: %s\n' \
+  "$TEST_DIR/jvm/java-21" "$TEST_DIR/jvm/default-java" >"$TEST_DIR/dpkg-S"
+cat >>"$TEST_DIR/apt-policy" <<'POLICY'
+openjdk-21-jre-headless:
+  Installed: 21.0.1+12-1
+  Candidate: 21.0.1+12-1
+  Version table:
+ *** 21.0.1+12-1 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status
+default-jre-headless:
+  Installed: 2:1.21-76
+  Candidate: 2:1.21-76
+  Version table:
+ *** 2:1.21-76 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status
+POLICY
+
+# A Gradle project with a wrapper.
+JAVA_PROJECT="$TEST_HOME/project"
+mkdir -p "$JAVA_PROJECT/gradle/wrapper"
+: >"$JAVA_PROJECT/build.gradle.kts"
+: >"$JAVA_PROJECT/gradlew"
+printf 'distributionUrl=https\\://gradle.example.com/gradle-9.6.0-bin.zip\n' >"$JAVA_PROJECT/gradle/wrapper/gradle-wrapper.properties"
+rm -rf -- "$STATE"
+TEST_ENV=(JAVA_HOME="$TEST_DIR/jvm/java-21" GOYOLO_TOOLS=java)
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan "toolchain $TEST_DIR/jvm/java-21 (21.0.1) [java]  first on PATH"
+expect_plan 'package   openjdk-21-jre-headless=21.0.1+12-1 [java]'
+expect_plan 'package   default-jre-headless=2:1.21-76 [java]'
+expect_plan "toolchain $TEST_HOME/.jdks/openjdk-27 (27) [java]  owned by you, as on the host"
+expect_plan "toolchain $TEST_HOME/.sdkman/candidates/java/17.0.9-tem (17.0.9) [java]  owned by you"
+expect_plan "link      $TEST_HOME/.sdkman/candidates/java/current → $TEST_HOME/.sdkman/candidates/java/17.0.9-tem [java]"
+expect_plan "toolchain $TEST_HOME/.gradle/jdks/eclipse_adoptium-25 (25.0.3) [java]  owned by you"
+expect_plan "mount     $TEST_HOME/.gradle/gradle.properties (read-only) [java]  ⚠ may hold credentials: the agent can read it"
+expect_plan "cache     $TEST_HOME/.gradle/caches ← .go-yolo/cache/gradle-caches [java]"
+expect_plan "cache     $TEST_HOME/.gradle/wrapper ← .go-yolo/cache/gradle-wrapper [java]  starts as a copy of the host's"
+expect_plan "seed      $TEST_HOME/.gradle/caches (read-only, as /var/cache/go-yolo/seed/gradle-caches) [java]"
+expect_plan 'env       GRADLE_RO_DEP_CACHE=/var/cache/go-yolo/seed/gradle-caches [java]  set by go-yolo'
+expect_plan "env       JAVA_HOME=$TEST_DIR/jvm/java-21 [java]"
+expect_plan 'domain    gradle.example.com [java]'
+expect_plan "GOYOLO_TOOLS is no longer used"
+[[ $plan_text != *"link      $TEST_DIR/jvm/default-java"* && $plan_text != *"toolchain $TEST_DIR/jvm/java-21 (21.0.1) [java]  owned"* ]] \
+  || fail 'the apt JDK or its apt link was planned as a copy'
+[[ $plan_text != *'tools     gradle'* ]] || fail 'a project with gradlew got a host gradle item'
+
+dry_run shell
+printf '%s\n' "${ARGS[@]}" | grep -qxF "GOYOLO_TOOL_PATH=$TEST_DIR/jvm/java-21/bin" \
+  || fail 'only the default JDK should be on PATH'
+cp /dev/null "$TEST_DIR/docker.log"
+TEST_IMAGE_STATUS=1 launch --yes shell 2>/dev/null
+dockerfile="$(cat "$STATE/build/Dockerfile")"
+for jdk in "$TEST_HOME/.jdks/openjdk-27" "$TEST_HOME/.sdkman/candidates/java/17.0.9-tem" "$TEST_HOME/.gradle/jdks/eclipse_adoptium-25"; do
+  [[ $dockerfile == *"--chown=$(id -u):$(id -g) [\"/\", \"$jdk/\"]"* ]] || fail "$jdk is not copied with your ownership"
+done
+[[ $dockerfile != *"\"$TEST_DIR/jvm/java-21/\""* ]] || fail 'the apt JDK is copied instead of installed'
+[[ $dockerfile == *"ln -sfn $TEST_HOME/.sdkman/candidates/java/17.0.9-tem $TEST_HOME/.sdkman/candidates/java/current"* ]] \
+  || fail 'the SDKMAN current link is not recreated'
+[[ -f $STATE/cache/gradle-wrapper/dists/gradle-9.6.0-bin/gradle-9.6.0-bin.zip.ok ]] \
+  || fail 'the Gradle wrapper cache did not start as a copy of the host one'
+pass "Java: every JDK Gradle could pick is planned (apt or copied), the default first on PATH; Gradle's caches are project-local"
+
+# A Maven project with a wrapper and a settings.xml with its own local repository and a mirror.
+rm -rf -- "$STATE" "$JAVA_PROJECT"/{build.gradle.kts,gradlew,gradle}
+mkdir -p "$JAVA_PROJECT/.mvn/wrapper" "$TEST_HOME/.m2" "$TEST_HOME/m2repo"
+: >"$JAVA_PROJECT/pom.xml"
+: >"$JAVA_PROJECT/mvnw"
+printf 'distributionUrl=https://maven.example.org/apache-maven-3.9.9-bin.zip\n' >"$JAVA_PROJECT/.mvn/wrapper/maven-wrapper.properties"
+cat >"$TEST_HOME/.m2/settings.xml" <<'XML'
+<settings>
+  <localRepository>${user.home}/m2repo</localRepository>
+  <mirrors><mirror><url>https://nexus.example.com/repository/maven/</url></mirror></mirrors>
+</settings>
+XML
+TEST_ENV=(JAVA_HOME="$TEST_DIR/jvm/java-21" MAVEN_ARGS=-ntp)
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan "mount     $TEST_HOME/.m2/settings.xml (read-only) [java]"
+expect_plan "cache     $TEST_HOME/m2repo ← .go-yolo/cache/m2-repository [java]"
+expect_plan "seed      $TEST_HOME/m2repo (read-only, as /var/cache/go-yolo/seed/m2-repository) [java]"
+expect_plan 'env       MAVEN_ARGS=-ntp -Dmaven.repo.local.tail=/var/cache/go-yolo/seed/m2-repository [java]  set by go-yolo'
+expect_plan 'domain    nexus.example.com [java]'
+expect_plan 'domain    maven.example.org [java]'
+[[ $plan_text != *'gradle'* ]] || fail 'a Maven project got Gradle items'
+rm -rf -- "$STATE" "$JAVA_PROJECT"/{pom.xml,mvnw,.mvn} "$TEST_HOME/.m2" "$TEST_HOME/m2repo"
+TEST_ENV=()
+pass "Java: Maven's settings, local repository (as cache and seed) and repository hosts are planned"
+
+# extra tool: kotlin linked from a general bin/ is its real install; gradle through SDKMAN's
+# current link keeps the link; a plain file in a bin/ directory can't be copied on its own.
+mkdir -p "$TEST_DIR/opt/kotlin/bin" "$TEST_HOME/.sdkman/candidates/gradle/8.5/bin"
+for tool in "$TEST_DIR/opt/kotlin/bin/kotlin" "$TEST_HOME/.sdkman/candidates/gradle/8.5/bin/gradle" "$TEST_DIR/bin/plaintool"; do
+  printf '#!/bin/sh\n' >"$tool"
+  chmod +x "$tool"
+done
+ln -s "$TEST_DIR/opt/kotlin/bin/kotlin" "$TEST_DIR/bin/kotlin"
+ln -s 8.5 "$TEST_HOME/.sdkman/candidates/gradle/current"
+mkdir -p "$STATE"
+printf 'extra tool kotlin\nextra tool gradle\nextra tool plaintool\nextra tool no-such-tool\n' >"$STATE/config"
+TEST_ENV=(PATH="$TEST_HOME/.sdkman/candidates/gradle/current/bin:$TEST_DIR/bin:/usr/bin:/bin")
+plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+expect_plan "toolchain $TEST_DIR/opt/kotlin (kotlin) [extra]"
+expect_plan "toolchain $TEST_HOME/.sdkman/candidates/gradle/8.5 (8.5) [extra]  owned by you, as on the host; first on PATH"
+expect_plan "link      $TEST_HOME/.sdkman/candidates/gradle/current → $TEST_HOME/.sdkman/candidates/gradle/8.5 [extra]"
+expect_plan "tools     plaintool (-) [extra]  ⚠ not copied: it isn't installed as <dir>/bin/<name>"
+expect_plan "tools     no-such-tool (-) [extra]  ⚠ not on the host's PATH"
+rm -rf -- "$STATE" "$TEST_DIR/bin"/{kotlin,plaintool}
+TEST_ENV=()
+pass 'extra tool brings a host command: its install directory (keeping a current-style link), on PATH'
 
 # --- --prune ----------------------------------------------------------------
 

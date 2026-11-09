@@ -5,6 +5,8 @@
 #
 #   extra    package  protobuf-compiler    also install this apt package
 #   extra    env      GITHUB_TOKEN         also pass this host environment variable
+#   extra    tool     kotlin               also bring this host command (its install directory)
+#   extra    mount    /home/me/notes       also mount this host path read-only
 #   exclude  package  libx11-dev           leave out an item the plan would include
 #   exclude  cert     /usr/local/share/ca-certificates/old.crt
 #   exclude  locale   cs_CZ.UTF-8
@@ -14,7 +16,7 @@
 #
 # Sets: CONFIG_ITEMS  one "verb kind name" string per config line
 
-CONFIG_KINDS="package cert locale env toolchain tools mount cache seed"
+CONFIG_KINDS="package cert locale env toolchain tools tool mount cache seed"
 CONFIG_ITEMS=()
 
 config_file() { printf '%s/.go-yolo/config' "$PROJECT_DIR"; }

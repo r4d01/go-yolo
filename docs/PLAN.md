@@ -31,7 +31,7 @@ host toolchains the project needs, plus **project-local caches** that persist be
 | D11 | **No user-wide defaults** for now. Per-project settings only, in `.go-yolo/config`. |
 | D12 | **Bash stays**, split into small modules. KISS and readability come first; some performance can be traded for it. A Go rewrite may come later. |
 | D13 | **Color output** on terminals; **fzf** is an optional helper, never required. |
-| D14 | Language order: **Go → Rust → Node → Java (Maven, Gradle) → Android**. |
+| D14 | Language order: **Go → Rust → Node → Java (Maven, Gradle) → Android**. Rust and Node are TBD: neither is installed on the host, so they wait until there is a real setup to mirror and test against; Java went ahead. |
 | D15 | **The image never downgrades a package.** If the host is behind the archive, the image gets the archive's newer version, and the plan shows a ⚠; you decide whether to go on (or `apt upgrade` the host). |
 | D16 | **Only packages a project needs**, never "all of the host's `*-dev` packages". Language packs propose the packages they find a reason for (e.g. a cgo `pkg-config` name → the host package owning that `.pc` file); everything else is an `extra package`. |
 
@@ -345,7 +345,10 @@ Done when: for this repo and a cgo project (e.g. sqlite), `go build ./...`, `go 
 `go generate ./...` behave the same on host and in container; `--parity` shows identical `go env`
 (apart from documented GOPROXY seeding); the host's `~/go` is never written.
 
-### Phase 2 — Rust
+### Phase 2 — Rust — TBD
+
+Not started: Rust isn't installed on the host. The design below stands; build it once there is a
+real rustup setup to mirror and test against.
 
 - Detect: `Cargo.toml`.
 - Resolve: `rustup which rustc` (in the repo), `rustup toolchain list`, `rustup show`.
@@ -367,7 +370,10 @@ Done when: for this repo and a cgo project (e.g. sqlite), `go build ./...`, `go 
 Done when: `cargo build`, `cargo test` and `cargo +<other toolchain> build` behave the same on host
 and container for a project with a `-sys` crate and one with `rust-toolchain.toml`.
 
-### Phase 3 — Node
+### Phase 3 — Node — TBD
+
+Not started: Node isn't installed on the host (only the agents' own Node in the base image). The
+design below stands; build it once there is a real setup to mirror.
 
 - Prerequisite: move the agents' Node to `/opt/go-yolo/node` with wrapper scripts, so the
   project's Node (including one in `/usr/local` from `n` or a tarball) never collides with it.
@@ -390,7 +396,24 @@ Done when: `npm ci && npm test` (and the pnpm/yarn equivalents with `packageMana
 same on host and container, including a project with a native addon whose `node_modules` built in
 the container then works on the host.
 
-### Phase 4 — Java (JDK, Maven, Gradle)
+### Phase 4 — Java (JDK, Maven, Gradle) — done
+
+Implemented as `packs/java.sh`, plus `extra tool NAME` (any host command: its apt packages or its
+install directory) replacing `GOYOLO_TOOLS`, whose mounts are gone. Details that differ from the
+list below:
+- Only the default JDK is on PATH (flag `on-path`); the others are where Gradle and Maven look.
+- apt JDKs are installed with apt (rule 3), and so are links owned by a package (`default-java`
+  from `default-jre-headless`); other links become `link` items.
+- Gradle's provisioned JDKs and `installations.paths` only count for Gradle projects,
+  `toolchains.xml` only for Maven projects; likewise their env variables.
+- The wrapper caches (`~/.gradle/wrapper`, `~/.m2/wrapper`) can't be read-only seeds (the wrapper
+  locks its distribution), so they are project caches that start as a copy of the host's
+  (`from-host`).
+- Mounted files that look like they hold credentials get a ⚠ (`may-hold-secrets`), in any pack.
+Checked on a real Gradle project with a JDK 25 toolchain: Gradle found the copied provisioned
+JDK, `gson` came from the read-only seed, a jar missing from the host's cache was downloaded into
+the project cache, the next build worked offline, and `~/.gradle` stayed untouched. `--parity`
+showed only the host's OpenJDK being one security update behind the archive (the plan's ⚠).
 
 - Detect: `pom.xml`, `mvnw`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradlew`.
 - Resolve the default JDK: `$JAVA_HOME`, `jenv javahome`, `mise where java`, else `command -v java`

@@ -5,12 +5,12 @@
 # The probes and the plan are copied into the container as text (declare -f / declare -p), so
 # both sides run exactly the same code. --parity exits with 1 if anything differs.
 
-# The probe script: the plan, the pack probes, and a call to each of them.
+# The probe script: the plan, the probes of the packs this project uses, and a call to each.
 parity_script() {
   local pack
   declare -p PLAN
   for pack in "${PACKS[@]}"; do
-    if declare -F "${pack}_probe" >/dev/null; then
+    if declare -F "${pack}_probe" >/dev/null && "${pack}_detect"; then
       declare -f "${pack}_probe"
       printf '%s_probe\n' "$pack"
     fi

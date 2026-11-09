@@ -2,8 +2,8 @@
 
 `go-yolo` runs AI coding agents (**Claude Code**, **OpenAI Codex CLI**, **Mistral Vibe**, **opencode**)
 inside a Docker container that mirrors your host: your user, your project directory, and a
-per-project image with copies of your host's toolchains (Go today; Java, Maven, Gradle are still
-mounted), packages, locales and settings. You confirm what goes in before it is built.
+per-project image with copies of your host's toolchains (Go; Java with Maven and Gradle),
+packages, locales and settings. You confirm what goes in before it is built.
 
 By default the agent runs **with its normal permission prompts** (Claude Code starts in auto mode,
 where a classifier approves safe actions and prompts for risky ones). With `--yolo` those prompts are
@@ -27,9 +27,7 @@ opts:    --net open|allowlist|none   (default: open)
          --dry-run                   print the docker command and exit
          -h | --help
 
-env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put on PATH
-                                     (default shown; add e.g. sbt kotlin ant, or set empty)
-         GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
+env:     GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
          GOYOLO_EXTRA_DOMAINS="a.example ..."  more domains for --net allowlist
          GOYOLO_QUIET=1                     don't print the mount summary line
          GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
@@ -73,13 +71,13 @@ after privileges are dropped.
   an MCP server to `~/.codex/config.toml`, or a plugin to `~/.config/opencode`. That code later runs
   **on the host** when you use the agent outside the container. The agent's credentials in that
   directory are readable too.
-- **Project caches in `.go-yolo/cache/`** (Go's module and build cache). The agent can write
+- **Project caches in `.go-yolo/cache/`** (Go's module and build cache, Maven's and Gradle's). The agent can write
   them, so one session can affect the next one of the same project, but nothing on the host uses
-  them. Your own `~/go` and `~/.cache/go-build` are never written; the host's module download
-  cache is only read (as a read-only seed).
-- **`~/.m2` and `~/.gradle`** (mounted read-write when `mvn`/`gradle` are in `GOYOLO_TOOLS`, the
-  default). `settings.xml` and `gradle.properties` often hold repository credentials, and the
-  agent can add a Gradle init script that later runs on the host. Set `GOYOLO_TOOLS=` to opt out.
+  them. Your own `~/go`, `~/.cache/go-build`, `~/.m2` and `~/.gradle` are never written; the
+  host's module and dependency caches are only read (as read-only seeds).
+- **Settings files the plan mounts read-only**: `~/.m2/settings.xml` and `gradle.properties`
+  often hold repository credentials, which the agent can read (the plan marks such files with
+  ⚠). Exclude one with `exclude mount PATH`.
 - `~/.gitconfig` and `~/.config/git/{config,ignore,attributes}` are mounted read-only, so the
   agent can read them (they usually hold no secrets; `~/.config/git/credentials` is not mounted).
 - Anything you add with `--mount` or `GOYOLO_MOUNTS`. A read-only mount can still be read and,
@@ -97,8 +95,8 @@ after privileges are dropped.
 - Docker, and a user that can run `docker` (e.g. in the `docker` group).
 - Optional: Go on the host. A project with a `go.mod` gets a copy of its toolchain and tools
   (see [Go](#go)).
-- Optional: a JDK, Maven, Gradle (or other tools, see [Host toolchains](#host-toolchains)) on the
-  host. They are mounted into the container too.
+- Optional: a JDK, Maven, Gradle on the host. A Maven or Gradle project gets copies of them (see
+  [Java](#java)); other host commands with `extra tool NAME`.
 
 The image's base matches the host (`debian:<codename>`, `ubuntu:<codename>` or
 `kalilinux/kali-rolling`), so host binaries copied or mounted into it (the Go toolchain,
@@ -279,6 +277,26 @@ are never mounted, so nothing the agent does there reaches the host. With the se
 works even with `--net none` as long as the host has the modules. `--parity` compares `go
 version`, `go env` (except `GOPROXY`, which starts with the seed on purpose) and the tools.
 
+### Java
+
+A project with a `pom.xml`, `mvnw`, `build.gradle(.kts)`, `settings.gradle(.kts)` or `gradlew`
+gets the host's Java:
+
+| item | what | how |
+|------|------|-----|
+| `toolchain` | **every JDK the build could pick as a toolchain**: `/usr/lib/jvm/*`, SDKMAN, `~/.jdks` (IntelliJ), mise, asdf; for Gradle also its provisioned JDKs (`~/.gradle/jdks`) and `org.gradle.java.installations.paths`, for Maven `toolchains.xml`'s `jdkHome`s | apt packages for apt-installed JDKs (and links such as `default-java`), copies at the same path, owned as on the host, for the rest; the default `java` (`$JAVA_HOME`, else the one on `PATH`) first on `PATH` |
+| `toolchain` | Maven or Gradle, if the project has no wrapper | as `extra tool` does |
+| `mount` | `~/.m2/settings.xml`, `toolchains.xml`; `GRADLE_USER_HOME`'s `gradle.properties`, `init.gradle(.kts)`, `init.d/` | read-only at the same path |
+| `cache` | the Maven local repository (`<localRepository>` or `~/.m2/repository`) and `~/.m2/wrapper`; Gradle's `caches/` and `wrapper/` | at the host's paths, from `.go-yolo/cache/`; the wrapper caches start as a copy of the host's (a wrapper must be able to lock its distributions, so a read-only seed won't do) |
+| `seed` | the host's Maven local repository; Gradle's `caches/` (with `modules-2/`) | read-only, used through `MAVEN_ARGS=-Dmaven.repo.local.tail=...` (Maven 3.9 and later) and `GRADLE_RO_DEP_CACHE` |
+| `env` | `JAVA_HOME`, `JAVA_OPTS`, `JAVA_TOOL_OPTIONS`, ...; for Maven `MAVEN_OPTS`, ...; for Gradle `GRADLE_OPTS`, `GRADLE_USER_HOME`, `ORG_GRADLE_PROJECT_*` (secrets filtered) | `docker run -e` |
+| `domain` | Maven Central, the Gradle services, the hosts in `settings.xml` and the wrappers' download URLs | allowed with `--net allowlist` |
+
+An apt JDK that is behind the archive gets the archive's newer version (never a downgrade) and a
+⚠ in the plan, so `apt upgrade` the host to match. `--parity` compares `java -version`, the JVM's
+main system properties (`java.home`, encodings, user language and country), `javac`, the JDKs
+found in the usual places, and `mvn -v`/`gradle --version` when they are on `PATH`.
+
 ### Checking parity
 
 `go-yolo.sh --parity` (from the project root, like a normal run) runs the same probes on the
@@ -341,9 +359,7 @@ Each path is mounted at the **same absolute path**, and only if it exists:
 | `$PWD/.go-yolo`                              | hidden     | always (an empty read-only tmpfs covers it)         |
 | `~/.gitconfig`                               | read-only  | if it exists                                        |
 | `~/.config/git/config`, `ignore`, `attributes` | read-only | each file, if it exists                            |
-| the plan's `mount`, `cache` and `seed` items | read-only; caches read-write from `.go-yolo/cache/` | see [The plan](#the-plan) and [Go](#go) |
-| each `GOYOLO_TOOLS` tool's install dir       | read-only  | if the tool is on `PATH` (see below)                |
-| `~/.m2`, `GRADLE_USER_HOME` or `~/.gradle`, `~/.sbt`, `~/.ivy2`, `~/.cache/coursier` | read-write | if the matching tool is in `GOYOLO_TOOLS` |
+| the plan's `mount`, `cache` and `seed` items | read-only; caches read-write from `.go-yolo/cache/` | see [The plan](#the-plan), [Go](#go) and [Java](#java) |
 | the selected agent's config (table below)    | read-write | that agent only, never another agent's config      |
 | each `--mount` / `GOYOLO_MOUNTS` path        | read-only, or `:rw` | when given (see below)                     |
 
@@ -357,8 +373,7 @@ aliases. `/run`, `/dev`, `/proc`, `/sys` and their descendants are also refused.
 settings such as `GOMODCACHE=$HOME`, `GOROOT=/usr` or `GRADLE_USER_HOME=$HOME` stop the launcher
 with an error.
 Mounts must also avoid `/opt/go-yolo`, system executable and library directories, and `/etc`
-configuration paths used during privileged startup. Debian JDK installations under
-`/usr/lib/jvm` and their Java configuration directories remain supported.
+configuration paths used during privileged startup.
 
 ### Extra mounts
 
@@ -373,7 +388,7 @@ GOYOLO_MOUNTS="$HOME/src/shared-lib $HOME/notes:rw" go-yolo.sh claude
 Relative paths are resolved against the current directory. A path that doesn't exist is an error.
 A symlink is mounted at its own path, with the directory it resolves to as the source.
 The mount safety checks above also apply here. Explicit mounts are added before the automatic
-ones, so `--mount ~/.m2:ro` makes the Maven cache read-only. `GOYOLO_MOUNTS` can't hold paths with spaces; use
+ones, so the first mode given for a path wins. `GOYOLO_MOUNTS` can't hold paths with spaces; use
 `--mount` for those.
 
 Your UID, GID, username, `$HOME` path and umask are the same as on the host, so files the agent
@@ -382,27 +397,13 @@ passed too; their locales are generated in the project image (see [The plan](#th
 is missing anyway (an excluded plan item), `LANG` falls back to `C.UTF-8` and an `LC_*` variable
 is dropped.
 
-### Host toolchains
+### Other host commands
 
-`GOYOLO_TOOLS` lists host commands to bring into the container (default `java mvn gradle`):
-
-```bash
-GOYOLO_TOOLS="java mvn gradle sbt kotlin ant" go-yolo.sh claude
-GOYOLO_TOOLS= go-yolo.sh claude                 # no host tools, no Java/Maven/Gradle caches
-```
-
-For each tool on `PATH`, the launcher follows its symlinks (`/usr/bin/java → /etc/alternatives →
-/usr/lib/jvm/...`, SDKMAN's `current`) to the real executable, which must sit in
-`<install dir>/bin`. The install dir is mounted read-only and its `bin` is put first on `PATH`. For
-`java`, a host `JAVA_HOME` takes precedence, and `JAVA_HOME` is set in the container. Directories
-that the install dir's symlinks point into (Debian's `/etc/java-N-openjdk`, `/etc/ssl/certs/java`,
-`/usr/share/java`) are mounted read-only as well. A host `GRADLE_USER_HOME` is passed into the
-container when `gradle` is listed.
-
-A tool installed straight into a system or home directory (e.g. `/usr/bin/foo`, `~/bin/foo` as a
-plain file) is skipped with a warning: mounting `/usr` or `~` would expose too much. A listed tool
-that isn't installed is skipped silently, but its cache directories are still mounted, so
-`./mvnw` and `./gradlew` projects reuse them.
+`extra tool NAME` in `.go-yolo/config` brings any host command: its apt packages if apt installed
+it, otherwise its install directory (the `<dir>` of the `<dir>/bin/NAME` it resolves to, keeping
+an SDKMAN-style `current` link), copied into the image and put first on `PATH`. A command that is a
+plain file in a shared `bin/` (`~/bin/foo`) can't be copied on its own and is flagged in the plan.
+`GOYOLO_TOOLS` is gone; go-yolo warns if it is still set.
 
 ## YOLO mode
 
@@ -536,12 +537,13 @@ too.
 | `lib/project.sh`    | git repository root check, the `.go-yolo/` state directory         |
 | `lib/config.sh`     | `.go-yolo/config` parsing                                          |
 | `lib/plan.sh`       | the plan: helpers for packs, showing, diffing and confirming it    |
-| `lib/toolchains.sh` | Go and `GOYOLO_TOOLS` host toolchain mounts                        |
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
 | `lib/prune.sh`      | `--prune`: image status, removal                                   |
 | `lib/parity.sh`     | `--parity`: runs the packs' probes on both sides and compares them |
 | `packs/host.sh`     | plan items every project gets (base, CAs, time zone, proxies, extras) |
+| `packs/go.sh`       | the Go pack                                                        |
+| `packs/java.sh`     | the Java pack (JDKs, Maven, Gradle)                                |
 
 Everything inside the container (`entrypoint.sh`, `scripts/`, `agents/`, `firewall/`, `tmux/`)
 is part of the image. `docs/PLAN.md` describes where this is heading.

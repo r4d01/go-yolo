@@ -12,7 +12,8 @@ NET_ARGS=()
 TTY_ARGS=()
 CMD=()
 
-# Mount the plan's mount, cache and seed items (creating missing project caches).
+# Mount the plan's mount, cache and seed items. A missing project cache is created; a from-host
+# one starts as a copy of the host's (cp --reflink makes that cheap where the filesystem can).
 add_plan_mounts() {
   local line kind group method name value flags cache
   for line in "${PLAN[@]}"; do
@@ -22,7 +23,13 @@ add_plan_mounts() {
       mount) add_mount "$name" ro ;;
       cache)
         cache="$PROJECT_DIR/.go-yolo/cache/$value"
-        if ((!DRY_RUN)); then mkdir -p -- "$cache"; fi
+        if ((!DRY_RUN)) && [[ ! -d $cache ]]; then
+          mkdir -p -- "$cache"
+          if [[ $flags == from-host ]]; then
+            note "copying $name ($(du -sh -- "$name" | cut -f1)) into .go-yolo/cache/$value, once"
+            cp -a --reflink=auto -- "$name/." "$cache/"
+          fi
+        fi
         add_mount "$name" rw "$cache"
         ;;
       seed) add_mount "$(seed_path "$value")" ro "$name" ;;
@@ -30,19 +37,18 @@ add_plan_mounts() {
   done
 }
 
-# The PATH entries for the plan's toolchains (their bin/) and tools directories, then the
-# GOYOLO_TOOLS ones; the entrypoint puts them first on PATH after dropping privileges.
+# The PATH entries for the plan's on-path toolchains (their bin/) and tools directories; the
+# entrypoint puts them first on PATH after dropping privileges.
 tool_path() {
-  local line kind group method name rest dirs=()
+  local line kind group method name value flags dirs=()
   for line in "${PLAN[@]}"; do
-    IFS=$'\t' read -r kind group method name rest <<<"$line"
+    IFS=$'\t' read -r kind group method name value flags <<<"$line"
     [[ $method != skip ]] || continue
     case $kind in
-      toolchain) dirs+=("$name/bin") ;;
+      toolchain) if [[ ,$flags, == *,on-path,* ]]; then dirs+=("$name/bin"); fi ;;
       tools) dirs+=("$name") ;;
     esac
   done
-  if [[ -n $LEGACY_TOOL_PATH ]]; then dirs+=("$LEGACY_TOOL_PATH"); fi
   local IFS=:
   printf '%s' "${dirs[*]}"
 }
@@ -137,7 +143,7 @@ build_docker_command() {
     CMD+=(-e "GOYOLO_TERMINFO=$terminfo")
   fi
   mapfile -t env_args < <(plan_env_args)
-  CMD+=("${env_args[@]}" "${TOOL_ENV[@]}" "${MOUNTS[@]}")
+  CMD+=("${env_args[@]}" "${MOUNTS[@]}")
   if [[ -n $(tool_path) ]]; then CMD+=(-e "GOYOLO_TOOL_PATH=$(tool_path)"); fi
   # Hide .go-yolo/ behind an empty tmpfs that only root could write to.
   CMD+=(--mount "type=tmpfs,$(csv_field "destination=$STATE_DIR"),tmpfs-mode=0555")

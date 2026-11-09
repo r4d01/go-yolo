@@ -26,11 +26,9 @@ is_system_dir() {
     /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*) return 0 ;;
     /usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/lib32/*|/usr/lib64/*) return 0 ;;
     /usr/local/bin/*|/usr/local/sbin/*|/usr/local/lib/*) return 0 ;;
-    # Exception: Debian JDKs live in /usr/lib/jvm (their symlink targets are checked separately).
-    /usr/lib/jvm|/usr/lib/jvm/*) ;;
+    # Exception: a JDK installed by hand in /usr/lib/jvm/<name> can be copied into the image.
+    /usr/lib/jvm/*) ;;
     /usr/lib/*) return 0 ;;
-    # Exception: the data directories that Debian's JDKs link into.
-    /etc/java-*-openjdk|/etc/java-*-openjdk/*|/etc/ssl/certs/java|/etc/ssl/certs/java/*) ;;
     /etc/*) return 0 ;;
     # Kernel and runtime trees.
     /run|/run/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*) return 0 ;;
@@ -80,36 +78,6 @@ add_mount() {
   spec="type=bind,$(csv_field "source=$real"),$(csv_field "target=$path")"
   if [[ $mode == ro ]]; then spec+=",readonly"; fi
   MOUNTS+=(--mount "$spec")
-}
-
-# True if PATH is already covered by a mount (the path itself or a parent directory).
-is_mounted() {
-  local mounted
-  for mounted in "${MOUNT_ORDER[@]}"; do
-    if is_under "$1" "$mounted"; then return 0; fi
-  done
-  return 1
-}
-
-# Mount DIR read-only plus the directories its symlinks point into outside DIR (Debian JDKs
-# link into /etc/java-N-openjdk and /etc/ssl/certs/java, Debian's maven into /usr/share/java).
-add_tree_mount() {
-  local dir=$1 link target parent
-  local -A parents=()
-  add_mount "$dir" ro
-
-  while IFS= read -r -d '' link; do
-    target="$(readlink -f "$link")" || continue
-    if [[ ! -e $target ]] || is_under "$target" "$dir"; then continue; fi
-    parent=${target%/*}
-    parents[${parent:-/}]=1
-  done < <(find "$dir" -type l -print0 2>/dev/null)
-
-  # Shortest paths first, so a parent directory's mount covers its subdirectories.
-  while IFS= read -r parent; do
-    if [[ -z $parent ]] || is_system_dir "$parent" || is_mounted "$parent"; then continue; fi
-    add_mount "$parent" ro
-  done < <(printf '%s\n' "${!parents[@]}" | awk '{ print length, $0 }' | sort -n | cut -d' ' -f2-)
 }
 
 # The project directory, read-write. Refuse $HOME, / or any parent of $HOME: too much.

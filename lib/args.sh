@@ -23,9 +23,7 @@ opts:    --net open|allowlist|none   (default: open)
          --dry-run                   print the docker command and exit
          -h | --help
 
-env:     GOYOLO_TOOLS="java mvn gradle"  host tools to mount (read-only) and put on PATH
-                                     (default shown; add e.g. sbt kotlin ant, or set empty)
-         GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
+env:     GOYOLO_MOUNTS="PATH[:ro|:rw] ..."  extra mounts, like --mount (whitespace-separated)
          GOYOLO_EXTRA_DOMAINS="a.example ..."  more domains for --net allowlist
          GOYOLO_QUIET=1                     don't print the mount summary line
          GOYOLO_{CLAUDE,CODEX,OPENCODE,VIBE,UV}_VERSION, GOYOLO_NODE_MAJOR
