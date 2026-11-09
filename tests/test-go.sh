@@ -16,7 +16,7 @@ TEST_GOCACHE=/proc reject shell
 TEST_GOROOT=/usr reject shell
 pass 'Go caches and toolchains at system or home directories (or aliases) are refused'
 
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan "toolchain $TEST_HOME/toolchain (go1.99.0) [go]  owned by you, as on the host"
 expect_plan "tools     $TEST_HOME/go/bin (1 files, "
 expect_plan "cache     $TEST_HOME/go/pkg/mod (project volume go-mod) [go]"
@@ -69,7 +69,7 @@ mkdir -p "$TEST_HOME/shared"
 : >"$TEST_HOME/go.work"
 TEST_ENV=(GOWORK="$TEST_HOME/go.work" GO_TEST_WORK_JSON='{"Use": [{"DiskPath": "./project"}, {"DiskPath": "./shared"}]}'
           GOYOLO_GOPATH_MODE=rw)
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan 'package   libsqlite3-dev=3.46.1-2 [go]'
 expect_plan 'package   pkgconf-bin=1.8.1-4 [go]'
 expect_plan "mount     $TEST_HOME/go.work (read-only) [go]  ⚠ outside the repository: read-only in the container"

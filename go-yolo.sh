@@ -76,15 +76,11 @@ add_git_config_mounts
 load_agent_profile
 add_agent_mounts
 
+# The base image is the same for every project and holds nothing from the host, so it is built
+# without asking; once it exists, the plan can compare its packages with the host's.
+if ((!DRY_RUN)); then ensure_base_image; fi
 resolve_plan               # what goes into the project image and the container
-confirm_plan               # shows a new or changed plan and asks
-if ((!DRY_RUN)); then
-  ensure_base_image
-  # Once the base image exists, its package versions can be compared with the host's; any
-  # difference shows up as a change to confirm before the project image is built.
-  resolve_plan
-  confirm_plan
-fi
+confirm_plan               # asks if the plan is new or exposes more than the confirmed one
 choose_project_image
 add_plan_mounts            # the plan's cache volumes and read-only mounts
 if ((PARITY)); then prepare_parity; fi   # probes instead of an agent

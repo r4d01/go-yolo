@@ -336,6 +336,9 @@ their caches in volumes, a second run reuses them, and nothing on the host is re
   becomes discovery plus one-off hints, or goes away.
 - Quieter confirmation (D20): ask only on selection or exposure changes; summary by default,
   `--plan` for details; exclude a ⚠ item from the prompt; the base image built without asking.
+  — done except the exclude-from-prompt (B3): an item counts as new exposure if it wasn't in the
+  confirmed plan or was left out there (the base image and parity notes never count); anything
+  else is taken with one note line.
 
 Done when: a new Go project and a new Gradle project are set up through the picker (with and
 without fzf), the result matches part 1's for the same picks, and a host upgrade of a picked item

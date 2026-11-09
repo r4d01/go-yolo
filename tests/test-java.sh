@@ -47,7 +47,7 @@ mkdir -p "$JAVA_PROJECT/gradle/wrapper"
 printf 'distributionUrl=https\\://gradle.example.com/gradle-9.6.0-bin.zip\n' >"$JAVA_PROJECT/gradle/wrapper/gradle-wrapper.properties"
 rm -rf -- "$STATE"
 TEST_ENV=(JAVA_HOME="$TEST_DIR/jvm/java-21" GOYOLO_TOOLS=java)
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan "toolchain $TEST_DIR/jvm/java-21 (21.0.1) [java]  first on PATH"
 expect_plan 'package   openjdk-21-jre-headless=21.0.1+12-1 [java]'
 expect_plan 'package   default-jre-headless=2:1.21-76 [java]'
@@ -93,7 +93,7 @@ cat >"$TEST_HOME/.m2/settings.xml" <<'XML'
 </settings>
 XML
 TEST_ENV=(JAVA_HOME="$TEST_DIR/jvm/java-21" MAVEN_ARGS=-ntp)
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan "mount     $TEST_HOME/.m2/settings.xml (read-only) [java]"
 expect_plan "cache     $TEST_HOME/m2repo (project volume m2-repository) [java]"
 expect_plan 'env       MAVEN_ARGS=-ntp [java]'
@@ -117,7 +117,7 @@ ln -s 8.5 "$TEST_HOME/.sdkman/candidates/gradle/current"
 mkdir -p "$STATE"
 printf 'extra tool kotlin\nextra tool gradle\nextra tool plaintool\nextra tool no-such-tool\n' >"$STATE/config"
 TEST_ENV=(PATH="$TEST_HOME/.sdkman/candidates/gradle/current/bin:$TEST_DIR/bin:/usr/bin:/bin")
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan "toolchain $TEST_DIR/opt/kotlin (kotlin) [extra]"
 expect_plan "toolchain $TEST_HOME/.sdkman/candidates/gradle/8.5 (8.5) [extra]  owned by you, as on the host; first on PATH"
 expect_plan "link      $TEST_HOME/.sdkman/candidates/gradle/current → $TEST_HOME/.sdkman/candidates/gradle/8.5 [extra]"

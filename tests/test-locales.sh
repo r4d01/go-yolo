@@ -9,7 +9,7 @@ rm -rf -- "$STATE"
 mkdir -p "$STATE"
 printf 'exclude locale cs_CZ.UTF-8\n' >"$STATE/config"
 TEST_ENV=(LANG=en_US.utf8 LC_TIME=sr_RS@latin LC_PAPER=xx_XX.UTF-8 LC_MONETARY=cs_CZ.UTF-8 LC_NUMERIC=C)
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan 'package   locales=2.41-12'
 expect_plan 'locale    en_US.utf8'
 expect_plan 'locale    sr_RS@latin'
@@ -29,7 +29,7 @@ dockerfile="$(cat "$STATE/build/Dockerfile")"
 [[ $dockerfile != *xx_XX* && $dockerfile != *cs_CZ* ]] || fail 'Dockerfile generates a left-out locale'
 
 printf 'exclude package locales\n' >"$STATE/config"
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan "locale    en_US.utf8  ⚠ not generated: the locales package isn't in the plan"
 rm -rf -- "$STATE"
 TEST_ENV=()

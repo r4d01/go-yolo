@@ -17,6 +17,7 @@ agents:  claude | codex | vibe | opencode | shell
 opts:    --net open|allowlist|none   (default: open)
          --rebuild                   force image rebuild
          --yes                       use a new or changed plan without asking (never from env)
+         --plan                      show every plan item (default: a summary, warnings in full)
          --yolo                      turn off the agent's permission prompts (default: off)
          --no-tmux                   don't run the agent inside tmux (default: tmux on a TTY,
                                      except for non-interactive runs such as claude -p;
@@ -193,25 +194,38 @@ container, so use `codex login --device-auth` or an API key.
 ### The plan
 
 Before anything is built, go-yolo works out a **plan**: what goes into the project's image and
-what is passed into the container. A new plan is shown in full, a changed one as a diff (`+`
-added, `-` removed, `~` changed), and you confirm it:
+what is passed into the container. (The shared base image is built first, without asking: it is
+the same for every project and holds nothing from your host.) A new plan is shown as a summary,
+one line per group plus every item with a warning in full, and you confirm it:
 
 ```
 go-yolo: plan for /home/me/src/myapp (new; edit .go-yolo/config to change it):
-    base     go-yolo-base:debian-trixie-5a5324ec
-    package  libsqlite3-dev=3.46.1-3 (extra)
-    package  zlib1g-dev=1:1.3.dfsg+really1.3.1-1+deb13u1 (extra)  ⚠ the host has 1:1.3.dfsg+really1.3.1-1+b1, an older version: the image gets the archive's version (apt upgrade the host to match)
-    cert     /usr/local/share/ca-certificates/corp/root.crt
-    env      TZ=Europe/Prague
-    env      HTTPS_PROXY  not passed: looks like a secret (to pass it: extra env HTTPS_PROXY)
+  host:  base debian-trixie-d33d4892, 1 locale, 4 parity notes, 1 env
+  go:    toolchain go1.27.0, tools (2 files), 2 caches, 3 domains, 5 env
+  extra: 2 packages
+  warnings:
+    package   zlib1g-dev=1:1.3.dfsg+really1.3.1-1+deb13u1 [extra]  ⚠ the host has 1:1.3.dfsg+really1.3.1-1+b1, an older version: the image gets the archive's version (apt upgrade the host to match)
+    parity    tzdata=2026f-0+deb13u1  ⚠ the base image has this newer version, the host has 2026e-0+deb13u1 (apt upgrade the host to match)
+go-yolo: every item: go-yolo.sh --plan (or [p] below)
 go-yolo: warning: the plan has warnings (⚠); check them before you go on
-go-yolo: use this plan? [y]es [n]o [e]dit config [d]ockerfile:
+go-yolo: use this plan? [y]es [n]o [p]lan [e]dit config [d]ockerfile:
 ```
 
-`e` opens `.go-yolo/config` in `$VISUAL`/`$EDITOR` and shows the plan again; `d` shows the
-generated Dockerfile (also kept in `.go-yolo/build/Dockerfile`). Enter or `n` stops without
-building. An unchanged plan is not shown again. Without a terminal, a new or changed plan is never
-used: go-yolo exits with an error unless you pass `--yes`. A dry run shows the plan and goes on.
+`p` (or `--plan` on the command line) shows every item; `e` opens `.go-yolo/config` in
+`$VISUAL`/`$EDITOR` and shows the plan again; `d` shows the generated Dockerfile (also kept in
+`.go-yolo/build/Dockerfile`). Enter or `n` stops without building.
+
+Later runs ask again **only when the plan exposes something new**: an item that wasn't in the
+confirmed plan, or one that was left out and is now included (a newly set env variable, a new
+mount, ...). Anything else, such as a version bump, a new base image, a changed parity note or a
+removed item, is taken with one line, and the image is rebuilt if needed:
+
+```
+go-yolo: plan updated, nothing new exposed: package zlib1g-dev 1:1.3.dfsg+really1.3.1-1+b1 → 1:1.3.dfsg+really1.3.1-1+deb13u1
+```
+
+Without a terminal, a plan that needs asking is never used: go-yolo exits with an error unless you
+pass `--yes`. A dry run shows the plan and goes on without saving it.
 
 What every project gets:
 

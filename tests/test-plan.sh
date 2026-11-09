@@ -21,7 +21,7 @@ extra env NOT_SET_ANYWHERE
 CONF
 TEST_ENV=(API_TOKEN=s3cr3t-value HTTPS_PROXY=http://user:pw@proxy.example:3128 NO_PROXY=localhost)
 
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan 'package   libfoo-dev=1.0-1 [extra]'
 expect_plan "package   libold-dev=1.0-1+deb13u1 [extra]  ⚠ the host has 1.0-1, an older version"
 expect_plan 'protobuf-compiler=3.21.12-11 [extra]  ⚠ not installed on the host'
@@ -68,12 +68,12 @@ image_before=${ARGS[-1]}
 for arg in "${ARGS[@]}"; do [[ $arg != *s3cr3t* ]] || fail 'a secret value is on the docker command line'; done
 printf '%s\n' "${ARGS[@]}" | grep -qxF API_TOKEN || fail 'API_TOKEN is not passed by name'
 TEST_ENV=(API_TOKEN=rotated HTTPS_PROXY=http://user:pw@proxy.example:3128 NO_PROXY=localhost)
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan '~ env       API_TOKEN [extra]  value not shown; value changed'
 dry_run shell
 [[ ${ARGS[-1]} == "$image_before" ]] || fail 'a runtime-only change changed the image'
 printf 'extra package libfoo-dev\n' >"$CONFIG"
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan '- package   libold-dev'
 dry_run shell
 [[ ${ARGS[-1]} != "$image_before" ]] || fail 'a package change kept the image'
@@ -88,10 +88,49 @@ rm -f "$CONFIG" "$STATE/plan"
 TEST_ENV=()
 pass '.go-yolo/config errors name the file and line'
 
+# The default plan view: one line per group, then every warning in full.
+rm -rf -- "$STATE"
+mkdir -p "$STATE"
+printf 'extra package libfoo-dev\nextra package libold-dev\n' >"$CONFIG"
+summary="$(launch --dry-run shell 2>&1 >/dev/null)"
+[[ $summary == *'  host:  base '*'1 cert'*'1 env'* && $summary == *'  extra: 2 packages'* ]] \
+  || fail "the summary lacks the group lines: $summary"
+[[ $summary == *'  warnings:'*'package   libold-dev=1.0-1+deb13u1 [extra]  ⚠ the host has 1.0-1'* ]] \
+  || fail "the summary lacks a warning: $summary"
+[[ $summary != *'libfoo-dev=1.0-1'* && $summary == *'every item: go-yolo.sh --plan'* ]] \
+  || fail "the summary lists items without warnings: $summary"
+pass 'the plan is shown as a summary with every warning in full; --plan shows every item'
+
+# D20: a change that exposes nothing new (a version bump) is taken with a note, even without a
+# terminal; one that exposes something new (an env variable) asks.
+cat >>"$TEST_DIR/apt-policy" <<'POLICY'
+libbump-dev:
+  Installed: 2.0-1
+  Candidate: 2.0-1
+  Version table:
+ *** 2.0-1 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status
+POLICY
+printf 'extra package libbump-dev\n' >"$CONFIG"
+launch --yes shell 2>/dev/null
+sed -i 's/2\.0-1/2.0-2/' "$TEST_DIR/apt-policy"
+output="$(launch shell 2>&1)" || fail "a version bump needed confirmation: $output"
+[[ $output == *'plan updated, nothing new exposed: package libbump-dev 2.0-1 → 2.0-2'* ]] \
+  || fail "the version bump was not noted: $output"
+grep -q '^package	extra	apt	libbump-dev	2.0-2	' "$STATE/plan" || fail 'the updated plan was not saved'
+printf 'extra package libbump-dev\nextra env NEW_VAR\n' >"$CONFIG"
+TEST_ENV=(NEW_VAR=x)
+if output="$(launch shell 2>&1)"; then fail 'a newly exposed env variable was taken without asking'; fi
+TEST_ENV=()
+[[ $output == *'run go-yolo in a terminal to confirm it'* ]] || fail "unexpected error: $output"
+rm -rf -- "$STATE"
+pass 'changes that expose nothing new are taken with a note; new exposure is asked'
+
 # Base image packages vs the host: zlib1g is older on the host, tzdata newer; libc6 is the
 # same, tini isn't on the host, "removed" was removed from the host (status rc).
 TEST_DPKG_HOST="$REPO_DIR/tests/fixtures/dpkg-host"
-plan_text="$(launch --dry-run shell 2>&1 >/dev/null)"
+plan_text="$(launch --dry-run --plan shell 2>&1 >/dev/null)"
 expect_plan 'parity    zlib1g=1:1.3-1+deb13u1  ⚠ the base image has this newer version, the host has 1:1.3-1 (apt upgrade the host to match)'
 expect_plan 'parity    tzdata=2026e-1  ⚠ the base image has this older version, the host has 2026f-1 (go-yolo.sh --rebuild updates the base image)'
 for name in libc6 tini removed only-on-host; do
@@ -99,18 +138,19 @@ for name in libc6 tini removed only-on-host; do
 done
 pass 'base image packages whose version differs from the host are warnings in the plan'
 
-# First run: the base image doesn't exist yet, so the comparison comes after it is built, as a
-# change to the plan that is confirmed before the project image is built.
+# First run: the base image doesn't exist yet. It is built first, without asking (it holds
+# nothing from the host), so the one plan shown already compares its packages with the host's.
 rm -f "$STATE/plan" "$TEST_DIR/docker.log.built"
 cp /dev/null "$TEST_DIR/docker.log"
 output="$(TEST_IMAGE_STATUS=built-on-build launch --yes shell 2>&1 >/dev/null)"
-[[ $output == *'plan for '*'(new;'* ]] || fail "first run did not show the new plan: $output"
-[[ $output == *'+ parity    zlib1g=1:1.3-1+deb13u1'* ]] || fail "the base comparison was not shown as a change: $output"
+[[ $output == *'building go-yolo-base:'*'plan for '*'(new;'* ]] || fail "the base was not built before the plan was shown: $output"
+[[ $output == *'parity    zlib1g=1:1.3-1+deb13u1  ⚠'* ]] || fail "the new plan lacks the base comparison: $output"
+[[ $(grep -c 'plan for\|plan for this project changed' <<<"$output") == 1 ]] || fail "the plan was shown more than once: $output"
 grep -q '^parity	host	check	zlib1g	' "$STATE/plan" || fail 'the confirmed plan lacks the base comparison'
 [[ $(grep -c '^build$' "$TEST_DIR/docker.log") == 2 ]] || fail 'expected a base and a project build'
 rm -f "$TEST_DIR/docker.log.built" "$STATE/plan"
 TEST_DPKG_HOST=""
-pass 'on a first run the base comparison is confirmed before the project image is built'
+pass 'a first run builds the base image without asking and shows one plan, with the base comparison'
 
 
 rm -rf -- "$STATE"
