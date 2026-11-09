@@ -1,6 +1,8 @@
 # go-yolo: project images plan
 
-Status: draft, 2026-11-08. Nothing here is implemented yet.
+Status: 2026-11-09. Part 1 (detection-based project images with Go and Java) is implemented on
+`feature/project-images`. Part 2 (this plan's next phases) reworks it: **you pick** what goes into
+the container, and go-yolo **installs** it from its source instead of copying host files.
 
 ## 1. Goal
 
@@ -8,484 +10,397 @@ The container should mirror the host's development environment for the current p
 **a build that worked in the container gives the same result when re-run on the host**, and a
 build that fails on the host fails the same way in the container.
 
-Today the launcher bind-mounts host toolchains (GOROOT, JDK, Maven, Gradle) and shares host caches
-read-write. That does not scale to more languages, breaks on tools that need to write (rustup,
-Android SDK, corepack), and lets the agent poison host caches (`~/.m2`, `~/go/bin`, Gradle init
-scripts). This plan replaces it with a **per-project image** that contains copies of exactly the
-host toolchains the project needs, plus **project-local caches** that persist between runs.
+Part 1 got there by detecting what a project needs (marker files, cgo `pkg-config` lines,
+`go.work`, which JDKs Gradle or Maven could pick) and copying the host's toolchains. That works,
+but the detection is the most complex and least predictable part, and copied host files can't be
+checked for integrity. Part 2 keeps everything else (the plan, confirmation, project images,
+project-local caches with read-only seeds, `--parity`, `--prune`) and changes two things:
+
+1. **Selection instead of detection.** A setup picker lists what the host has; you pick what the
+   container gets and how (in the image, mounted, cached). The choice is saved and never
+   re-detected.
+2. **Install instead of copy.** Picked items are installed in the image from their source (a
+   vendor download with its checksum, the ecosystem's own manager, apt) at the host's versions;
+   copying host files is the fallback for items nothing knows how to install.
 
 ## 2. Decisions
 
 | # | Decision |
 |---|----------|
 | D1 | **Reproducible on the host** is the guiding rule. When in doubt, do what the host would do. |
-| D2 | **Versions come from the host, never from the project.** The project only decides *which* toolchains are needed (`go.mod` → Go). Which Go, JDK, Rust or Node is used is what the host resolves in the project directory, in the user's shell (SDKMAN, nvm, mise, direnv activations included). |
-| D3 | **Toolchains are copied into a per-project image**, not mounted. Bigger images are acceptable. |
-| D4 | **Truly identical** beats small: all JDKs that the host's Gradle/Maven could pick as toolchains, the whole Android SDK, all installed Rust toolchains. |
+| D2 | **Versions come from the host**, read from the host's own tools on every run (`go env`, the JDK's `release` file, `rustup`, `sdkmanager --list_installed`, ...). The config says *what*, never *which version*, so a host upgrade carries over by itself. |
+| D3 | ~~Toolchains are copied into a per-project image.~~ Superseded by D18. |
+| D4 | ~~Truly identical beats small: every JDK the build could pick, the whole Android SDK, ...~~ Superseded by D17: identical *as configured*; the picker shows everything the host has, and `--parity` points out what the container lacks. |
 | D5 | **Same paths as on the host** for everything: toolchains, config files, caches. Symlink chains the host uses (e.g. SDKMAN `current`) are recreated. |
-| D6 | **Same ownership as on the host.** A copied directory owned by root on the host is root-owned in the image; one owned by the user (`~/go/bin`, an nvm Node) is owned by the user, so `go install` / `npm i -g` work as on the host. Such writes live only as long as the container. |
-| D7 | **Project-local, persistent caches** in `<repo>/.go-yolo/cache/`, mounted read-write at the host's cache paths. **Host caches are mounted read-only as seeds** where the tool supports it. Nothing is ever written to the host's own caches. |
+| D6 | **Same ownership as on the host.** Root-owned on the host means root-owned in the image; user-owned (`~/go/bin`, `~/.rustup`, `~/Android/Sdk`) means installed as the user, so `go install`, `npm i -g` and the like work as on the host. Such writes live only as long as the container. |
+| D7 | **Project-local, persistent caches** in `<repo>/.go-yolo/cache/`, mounted read-write at the host's cache paths. **Host caches are read-only seeds** where the tool supports it; a cache a tool must write to (e.g. a wrapper's distributions) starts as a copy of the host's. Nothing is ever written to the host's own caches. |
 | D8 | **`.go-yolo/` is hidden from the container** (covered by an empty, read-only tmpfs) and **ignores itself in git** (`.go-yolo/.gitignore` containing `*`). |
 | D9 | **Must run from the git repository root.** Anywhere else is an error. |
-| D10 | **Confirm before building.** The launcher resolves a plan (what will be installed, how, what will be set and mounted), shows it, and builds only a confirmed plan. Changes are shown as a diff. |
+| D10 | **Confirm before building.** The plan (what is installed, how, what is set and mounted) is shown and confirmed before anything is built. D20 limits *when* it asks. |
 | D11 | **No user-wide defaults** for now. Per-project settings only, in `.go-yolo/config`. |
-| D12 | **Bash stays**, split into small modules. KISS and readability come first; some performance can be traded for it. A Go rewrite may come later. |
+| D12 | **Bash stays**, split into small modules. KISS and readability come first; some performance can be traded for it. A Go rewrite may come later (see 4.7). |
 | D13 | **Color output** on terminals; **fzf** is an optional helper, never required. |
-| D14 | Language order: **Go → Rust → Node → Java (Maven, Gradle) → Android**. Rust and Node are TBD: neither is installed on the host, so they wait until there is a real setup to mirror and test against; Java went ahead. |
-| D15 | **The image never downgrades a package.** If the host is behind the archive, the image gets the archive's newer version, and the plan shows a ⚠; you decide whether to go on (or `apt upgrade` the host). |
-| D16 | **Only packages a project needs**, never "all of the host's `*-dev` packages". Language packs propose the packages they find a reason for (e.g. a cgo `pkg-config` name → the host package owning that `.pc` file); everything else is an `extra package`. |
+| D14 | Order: **rework (part 2) → Go and Java on the new model → Android → Arduino**. **Rust and Node are TBD**: neither is installed on the host, so they wait for a real setup to test against. |
+| D15 | **The image never downgrades a package.** If the host is behind the archive, the image gets the archive's newer version and the plan shows a ⚠; you decide whether to go on (or upgrade the host). |
+| D16 | **Only packages you pick.** Never "all of the host's `*-dev` packages" (that pulled in X11, OpenGL and LLVM headers and hit downgrades). The picker lists the host's installed packages; a catalog may suggest a few. |
+| D17 | **You pick, go-yolo suggests once.** A setup picker lists what the host has, grouped, each with a default mode. On the first setup a few items are pre-selected from simple hints (a `go.mod` → the Go items); after that the saved selection is the only source of truth, and nothing is re-detected. `--setup` opens the picker again with the current selection. |
+| D18 | **Install from the source; copy is the fallback.** Each picked item is installed in the image the way a catalog recipe says: a vendor download checked against the vendor's checksum, the ecosystem's manager at the host's versions (`go install path@version`, `rustup`, `sdkmanager`, `arduino-cli`, `npm i -g`), or apt. An item no recipe knows is copied from the host, and the picker says so. |
+| D19 | **Building the image may use the network** (downloads for D18). Running the container stays under `--net`. |
+| D20 | **Ask only when exposure changes.** A full confirmation is needed when the selection changes, or when something new is exposed to the container (a mount, an env variable, a secret-looking file, a device). Version changes of picked items and `parity` drift are shown in one banner line and rebuilt without asking. |
+| D21 | **Devices** (Arduino uploads, adb over USB): TBD. If they come, then opt-in per project with a ⚠ (the agent could flash a board). |
+| D22 | **AI-proposed recipes: later, optional** (see 3.11). The AI only proposes; go-yolo verifies the result against the host before offering it, and saves accepted recipes. |
 
 ## 3. Design
 
 ### 3.1 Flow of one run
 
 ```
-parse args → detect host → check project → resolve plan → confirm plan → ensure images → run
-                                           (lang packs)    (diff, ask)     (base + project)
+parse args → host → project → [setup picker] → resolve plan → confirm (D20) → images → run
+                               first run or        catalogs:      only when        base +
+                               --setup             versions,      exposure         project
+                                                   recipes        changes
 ```
 
-`go-yolo.sh` itself only loads the modules and calls these steps in order.
+`go-yolo.sh` only loads the modules and calls these steps in order.
 
 ### 3.2 Code layout
 
 ```
-go-yolo.sh            entry point: load lib/, call the steps (~50 lines)
+go-yolo.sh            entry point: load lib/ and catalogs/, call the steps
 lib/
   ui.sh               colors, die/warn/note, prompts, fzf helpers with plain fallbacks
-  args.sh             option parsing; the globals it sets are listed at the top
+  args.sh             option parsing
   aliases.sh          --install-aliases & co.
-  host.sh             distro, user, base image name
-  project.sh          git-root check, .go-yolo/ checks and setup, cache dirs
+  host.sh             distro, user
+  project.sh          git-root check, .go-yolo/
   mounts.sh           add_mount, path validation, system directory list
   agent.sh            agent profile and its config mounts
-  toolchains.sh       today's host toolchain mounts (shrinks in phase 1, gone after phase 4)
-  plan.sh             plan helpers (plan_toolchain, plan_env, ...), render, diff, confirm
-  image.sh            base image build, project Dockerfile generation, project image build
+  config.sh           .go-yolo/config: the selection
+  setup.sh            the setup picker
+  plan.sh             the plan model: items, sorting, hash, reading/writing
+  kinds.sh            the item kinds, declared in one table (3.5)
+  apt.sh              apt versions and owners
+  confirm.sh          showing, diffing and confirming the plan
+  image.sh            base image, project Dockerfile, builds
   run.sh              docker run command, tmux decision, banner
-packs/
-  go.sh  rust.sh  node.sh  java.sh  android.sh
+  prune.sh            --prune
+  parity.sh           --parity
+catalogs/
+  host.sh  go.sh  java.sh  android.sh  arduino.sh   (rust.sh, node.sh: TBD)
+  README.md           the catalog contract (3.3) and a template
 agents/*.conf         unchanged
 ```
 
-Conventions:
+Catalogs (and agents) are discovered from their directories: adding one means adding a file, not
+editing `go-yolo.sh`. Conventions stay as in part 1: small functions with a one-line comment,
+plain `if`/`for` over clever one-liners (a comment with an example where `awk`/`sed` is
+unavoidable), few documented globals, shellcheck-clean, no escape codes or fzf checks outside
+`lib/ui.sh`.
 
-- Small functions with one job and a one-line comment saying what they are for.
-- Plain `if`/`for` over clever one-liners. Unavoidable `awk`/`sed` gets a comment with an example
-  of input and output.
-- Few globals, set in `args.sh` and `host.sh`, listed at the top of each file.
-- shellcheck-clean. Every module has its own tests.
-- No raw escape codes outside `lib/ui.sh`. No fzf checks outside `lib/ui.sh`.
+### 3.3 Catalogs
 
-### 3.3 Language packs
+A catalog (`catalogs/<name>.sh`, formerly a "pack") knows one ecosystem. Every ecosystem follows
+the same two-level pattern: a **runtime or manager**, plus **items that manager installed**, which
+the host's manager can list. A catalog implements five functions, prefixed with its name:
 
-Each `packs/<name>.sh` defines two functions, prefixed with the pack name. `packs/host.sh` (base
-image, CAs, time zone, proxies, extras) is the pack every project gets:
+| function | job | example (Go) |
+|----------|-----|--------------|
+| `<name>_discover` | list what the host has: the picker's candidates, each with a group, an id, a description, a size, a default mode, and whether a hint pre-selects it | GOROOT, each tool in GOBIN, the module and build caches, the GOENV file, Go env variables |
+| `<name>_resolve ID` | for a picked item, read its version and facts from the host now (D2) | `go env GOVERSION`; `go version -m ~/go/bin/gopls` → `golang.org/x/tools/gopls v0.21.0` |
+| `<name>_recipe ID` | how to install it in the image (D18) | the go.dev tarball + SHA-256; `go install golang.org/x/tools/gopls@v0.21.0` |
+| `<name>_glue ID` | runtime wiring for picked caches and settings | `GOPROXY=file://<seed>,…` for the module seed |
+| `<name>_probe` | `--parity` probes, run on both sides | `go version`, `go env`, the tools |
 
-```bash
-go_detect()  { [[ -f go.mod ]]; }     # does the project need this language?
-go_resolve() { ...; }                 # ask the host, emit plan lines via plan_* helpers
-```
+How the ecosystems fit:
 
-Packs stay short: the tricky parts (apt vs copy, symlink chains, ownership, shims, secret
-detection) live once in `lib/plan.sh` as helpers such as `plan_toolchain`, `plan_env_candidates`,
-`plan_file`, `plan_seed`, `plan_cache`, `plan_domain`.
+| catalog | runtime / manager: recipe | items: host inventory → recipe |
+|---------|---------------------------|--------------------------------|
+| host | apt | `dpkg-query` → `apt-get install name=version`; CAs, locales, time zone, proxies |
+| go | go.dev tarball + SHA-256 | `go version -m GOBIN/*` → `go install path@version` (a `(devel)` build is copied) |
+| java | apt, or Adoptium (Temurin) + checksum | each JDK's `release` file (vendor, version) → apt / Adoptium / copy; Maven and Gradle distributions from their release URLs + checksums |
+| android | cmdline-tools zip + checksum | `sdkmanager --list_installed` → `sdkmanager "platforms;android-35" "build-tools;35.0.0" …`; licences from the host |
+| arduino | arduino-cli release + checksums | `arduino-cli core list`/`lib list --format json` → `core install arduino:avr@1.8.6`, `lib install X@ver`; `arduino-cli.yaml` (board manager URLs) |
+| rust (TBD) | rustup-init + checksum | `rustup toolchain list`, `component`/`target list --installed`, `cargo install --list` → `rustup toolchain install X -c … -t …`, `cargo install --locked name@version` |
+| node (TBD) | nodejs.org tarball + signed SHASUMS (as the base image already does for the agents) | `npm ls -g --json`, corepack → `npm i -g name@version`, `corepack prepare` |
 
-### 3.4 The plan is plain text
+Most ecosystem knowledge sits in two small places, the inventory command and the install command.
+The tricky shared parts (apt, ownership, symlink chains, secrets, checksums, downloads) live once
+in `lib/`.
 
-Every step either writes plan lines or reads them. A plan is a sorted, tab-separated text file,
-one item per line:
+### 3.4 `.go-yolo/config`: the selection
 
-```
-kind       lang    method  path / name                                 value / flags
-toolchain  go      copy    /usr/local/go                               1.25.3
-toolchain  java    apt     openjdk-21-jdk-headless                     21.0.5+11-1~deb13u1
-link       java    link    ~/.sdkman/candidates/java/current           21.0.5-tem
-package    host    apt     libsqlite3-dev                              3.46.1-2
-package    extra   apt     protobuf-compiler                           3.21.12-11 warn:not-on-host
-cert       host    copy    /usr/local/share/ca-certificates/corp.crt
-tool       go      copy    ~/go/bin/golangci-lint                      user-owned
-env        go      env     GOPRIVATE                                   github.com/r4d01/*
-file       gradle  ro      ~/.gradle/gradle.properties                 warn:secret
-seed       go      ro      ~/go/pkg/mod/cache/download
-cache      go      rw      ~/go/pkg/mod                                .go-yolo/cache/go-mod
-domain     rust    allow   index.crates.io
-```
-
-(`~` is shown for readability; the file stores absolute paths.)
-
-- **Build-time kinds** (`toolchain`, `link`, `package`, `cert`, `tool`) define the project image.
-- **Runtime kinds** (`env`, `file`, `seed`, `cache`, `domain`) become `docker run` arguments.
-- **Confirming** compares the new plan with `.go-yolo/plan` (the last confirmed one) using `diff`.
-- **The image tag** includes the `sha256sum` of the build-time lines plus the base image hash.
-- **The Dockerfile** is generated line by line, one small function per method.
-- **Tests** run a language pack against a fixture host and compare its output with an expected
-  plan file.
-
-### 3.5 `.go-yolo/` directory
+One picked item per line, written by the picker and editable by hand (parsed, never `source`d):
 
 ```
-<repo>/.go-yolo/
-  .gitignore     "*"
-  config         user choices (extra / exclude)
-  plan           last confirmed plan
-  build/         generated Dockerfile and small staged files (certs, apt sources)
-  cache/         persistent caches: go-mod, go-build, cargo-registry, npm, gradle, m2, ...
+# mode   catalog  kind       id                        options
+image    go       toolchain
+image    go       tool       gopls
+cache    go       modules                              seed
+cache    go       build
+mount    go       goenv
+env      go       GOPRIVATE
+image    java     jdk        /usr/lib/jvm/java-21-openjdk-amd64
+image    java     jdk        /home/me/.gradle/jdks/eclipse_adoptium-25-amd64-linux.2
+cache    gradle   caches                               seed
+cache    gradle   wrapper                              from-host
+mount    gradle   properties
+image    android  sdk        platforms;android-35
+image    arduino  core       arduino:avr
+image    host     package    protobuf-compiler
+image    host     tool       kotlin                    copy
+env      host     GITHUB_TOKEN
 ```
 
-Checks on every run. Any failure is an error with an explanation:
+- Modes: `image` (installed in the image), `mount` (read-only at the same path), `cache`
+  (project-local, at the host's path; options `seed`, `from-host`), `env`. `device` if D21
+  happens.
+- The config holds **what**, the plan holds **which version and how**.
+- Options override a recipe choice (`copy` forces a copy).
+- The container can't see this file, and a repo can't ship it (3.6): a trusted source of settings.
 
-- `.go-yolo` is a real directory (not a symlink), owned by the user, inside the repo.
-- Nothing under `.go-yolo/` is tracked by git (`git ls-files .go-yolo` is empty). A repo that
-  ships its own `.go-yolo` is refused.
-- Every cache subdirectory passes the normal mount checks.
-- If the repo has a `Dockerfile` and its `.dockerignore` doesn't exclude `.go-yolo/`, print a
-  one-time warning (the caches would end up in that project's Docker build context).
+### 3.5 The plan
 
-In the container, `<repo>/.go-yolo` is covered by `--mount type=tmpfs,destination=<repo>/.go-yolo,tmpfs-mode=0555`
-(root-owned, so the agent can't write to it). The caches are reachable only through their own
-mounts at the host's cache paths.
+The plan is the resolved selection: one line per item with its version, recipe and notes, as in
+part 1, with two changes:
 
-### 3.6 `.go-yolo/config`
+- **Kinds are declared in one table** (`lib/kinds.sh`): for each kind its sort rank, whether it
+  goes into the image, how it is shown, and which function emits its Dockerfile lines or
+  `docker run` arguments. Adding a kind means one row, not edits in five places.
+- **Behaviour and notes are separate fields.** `attrs` change what go-yolo does (`on-path`,
+  `from-host`, `derived`, `user`); `notes` only explain (`host-older=…`, `secret`, `outside-repo`).
 
-A simple line format, parsed (never `source`d):
+The image tag still includes a hash of the build-time lines, so a version change rebuilds. The
+confirmed plan stays in `.go-yolo/plan`.
 
-```
-# one item per line: extra|exclude <kind> <name>
-extra    tool     sbt
-extra    package  protobuf-compiler
-extra    env      GITHUB_TOKEN
-exclude  toolchain /usr/lib/jvm/java-17-openjdk-amd64
-exclude  package  libpq-dev
-```
+### 3.6 `.go-yolo/` directory
 
-The container can't see this file, and a repo can't ship it (see 3.5), so it is a trusted
-source of settings.
+Unchanged from part 1: `config`, `plan`, `build/` (generated Dockerfile and staged files), `cache/`.
+It must be a plain directory owned by the user with nothing tracked by git; the container sees an
+empty read-only tmpfs; a project with a Dockerfile but no `.go-yolo/` in `.dockerignore` gets a
+one-time warning.
 
 ### 3.7 Images
 
 ```
-go-yolo-base:<distro>-<codename>-<hash>     shared: OS, agents, entrypoint (today's image)
+go-yolo-base:<distro>-<codename>-<hash>     shared: OS, agents, entrypoint
         ▲ FROM
-go-yolo:<project>-<pathhash>-<planhash>     per project: generated from the plan
+go-yolo:<project>-<pathhash>-<planhash>     per project: the plan's install steps
 ```
 
-- The base image still matches the host distro and codename, because copied binaries need the
-  host's glibc and apt packages must have the host's versions.
-- Large directories are passed as BuildKit named contexts (`--build-context tcN=<dir>`, then
-  `COPY --from=tcN`), so nothing big gets staged. Small files are staged in `.go-yolo/build/`,
-  which is the main build context. **Requires BuildKit** (default since Docker 23).
-- `COPY --chown=<uid>:<gid>` for user-owned sources (D6). Missing parent directories under
-  `$HOME` are created with the user's ownership.
-- COPY steps are ordered by size (largest and most stable first, e.g. the Android SDK), so that
-  projects with the same big toolchain share build cache, and layers where possible.
-- Images carry labels: project path, plan hash, confirmation date. `--prune` uses them.
-- `--rebuild` rebuilds the base (pull, no cache) and then the project image.
+- The base still matches the host distro and codename: apt versions must be the host's, and
+  copied binaries (the fallback) need the host's glibc.
+- **Install steps run as the owner the host has (D6):** root-owned items as root, user-owned ones
+  (`~/.rustup`, `~/Android/Sdk`, `~/.arduino15`, GOBIN) after `USER <uid>:<gid>` with `HOME` set,
+  so paths and ownership match.
+- Downloads are checked against the vendor's own checksum (or signature), fetched from the vendor,
+  never typed into a recipe by hand where the vendor publishes one.
+- Copies (the fallback) use BuildKit named contexts with host ownership, as in part 1.
+- Steps are ordered by size and stability, so projects with the same big toolchain share layers.
+- The base image is built without asking (it is the same for every project and holds nothing
+  from the host), so a first run asks only once.
 
-### 3.8 Plan confirmation
+### 3.8 Setup and confirmation
+
+**The setup picker** (first run, or `--setup`) shows the candidates from every catalog, grouped,
+with the recipe each would use:
 
 ```
-go-yolo: image plan for ~/src/myapp (new)
+go-yolo: what should this project's container get?   (TAB: pick · Enter: done)
 
-base       debian:trixie + agents (go-yolo-base:debian-trixie-3f2a91c0)
-toolchains
-  go        1.25.3   copy   /usr/local/go                              (≈ 250 MB)
-  java      21.0.5   apt    openjdk-21-jdk-headless=21.0.5+11-1~deb13u1
-  ...
-runtime (not baked into the image)
-  env       GOPRIVATE=github.com/r4d01/*
-  ro files  ~/.gradle/gradle.properties   ⚠ contains "password"
-  ...
-  not passed  GITHUB_TOKEN (looks secret; add it with `extra env`)
-
-[y] build  [n] abort  [e] edit  [d] show Dockerfile  [?] help
+  go
+  > [x] toolchain go1.27.0        /opt/go/1.27.0            install: go.dev tarball (sha256)
+    [x] tool gopls v0.21.0        ~/go/bin/gopls            install: go install …@v0.21.0
+    [ ] tool my-tool (devel)      ~/go/bin/my-tool          copy: built locally
+    [x] cache modules (+ seed)    ~/go/pkg/mod              project cache, host's as seed
+  java
+    [ ] jdk 21.0.12 (apt)         /usr/lib/jvm/java-21-…    install: apt
+    [ ] jdk 25.0.3 (Temurin)      ~/.gradle/jdks/…          install: Adoptium (sha256)
+    [ ] jdk 27                    ~/.jdks/openjdk-27        copy: unknown vendor
+  host
+    [ ] apt packages …            (type to search installed and archive packages)
 ```
 
-- On later runs only the diff is shown (`+` added, `-` removed, `~` changed), with the reason when
-  known ("host upgraded", "no longer on host").
-- If only runtime lines changed, there is no rebuild, but the change is still confirmed.
-- `[e]` with fzf: a multi-select to exclude items (with a preview pane: value, source, size,
-  warnings, why it was detected), then a multi-select to add extras (host tools not in the plan,
-  host env vars not proposed, apt packages from `apt-cache pkgnames` with `apt-cache show` as
-  the preview). Without fzf: open `.go-yolo/config` in `$EDITOR`. Then resolve and show again.
-- `[d]` shows the generated Dockerfile; it is also kept in `.go-yolo/build/Dockerfile`.
-- Size estimates (`du`) per copied item and a total.
-- **No terminal → never build an unconfirmed plan**: exit with an error that lists the changes and
-  says to run interactively.
-- `--yes` skips the prompt. It is never read from the environment and no alias adds it (same
-  model as `--yolo`).
-- The banner shows `plan <hash> confirmed <date>`.
+A preview pane shows each item's path, size, recipe and what its mode means. Without fzf, a
+numbered list. Pre-selection (D17) uses only simple, one-off hints: marker files at the repo root
+(`go.mod`, `build.gradle*`, `pom.xml`, `local.properties`, `*.ino`). The result is written to
+`.go-yolo/config`.
 
-### 3.9 Cross-cutting rules (apply to every language)
+**Confirmation** (D20): after setup, the plan is confirmed once. Later runs ask again only when the
+selection changes or something new is exposed; version bumps and parity drift go into one banner
+line (`go 1.27.0 → 1.27.1 · 2 parity notes · rebuilt`). The plan is shown as a **summary by
+default** (`go 1.27 · gopls · 2 caches · 1 ⚠`) with `--plan` for every line. A ⚠ item can be
+excluded right from the prompt. `--yes` and the refusal without a terminal stay as in part 1.
 
-1. **Ask the host's own tools**, in the project directory: `go env`, `rustup which rustc`,
-   `volta which node`, `jenv javahome`, `mise where <tool>`, `$JAVA_HOME`, `command -v`.
-   Shim-based managers (jEnv, Volta, asdf, mise, rustup) are resolved through the manager,
-   never by `readlink` on the shim.
-2. **Recreate the symlink chain** from the path the host uses to the real directory.
-3. **Apt-installed toolchains are installed with apt** at the host's exact version
-   (`dpkg -S <path>` → package, `dpkg-query` → version), so their library dependencies come
-   along. Extra host apt sources (`/etc/apt/sources.list.d/*`) and their keyrings are mirrored. If
-   the exact version is no longer available, fall back to copying the directory and installing
-   the packages it depends on.
-4. **Packages** (D16): the packs propose what a project needs; `extra package <name>` adds more.
-   Each gets the **host's version** when it is in the distro archive (this release, its
-   `-updates` and `-security` suites; checked with `apt-cache policy`). Otherwise:
-   - host behind the archive → the archive's newer version, `⚠` (D15: never a downgrade);
-   - not installed on the host → the archive's version, `⚠ not installed on the host`;
-   - the host's version only comes from a third-party repository or backports → left out, `⚠`;
-   - unknown to apt → left out, `⚠`.
-   The version is recorded in the plan, so a change shows up in the diff. Only apt for now; a
-   free-form Dockerfile snippet can come later if there's a real need. (An earlier idea, all of
-   the host's `*-dev` packages, pulled in X11, OpenGL and LLVM headers no build needed, and
-   hit downgrades on an out-of-date host.)
-5. **CA certificates**: host extra CAs (`/usr/local/share/ca-certificates/*`) are copied and
-   `update-ca-certificates` is run.
-6. **Config in parent directories** (`go.work`, `.cargo/config.toml`, `rust-toolchain.toml`) is
-   found and mounted read-only at its host path.
-7. **Absolute paths inside config files** (Maven `localRepository`, Gradle
-   `org.gradle.java.installations.paths`, Cargo `target-dir`, npm `prefix`, `go.work` `use`) are
-   reported in the plan with a warning when they point outside what the plan covers.
-8. **Env vars**: each pack lists candidate names. Candidates set on the host are proposed with
-   their values. Names matching `*TOKEN*|*SECRET*|*PASSWORD*|*KEY*|*CREDENTIAL*|*AUTH*`, and
-   URLs with a password, are never proposed; they can only be added with `extra env NAME`, and
-   their values are never shown or stored (only a hash). Variables are passed by name with
-   `docker run -e NAME`, never baked into the image and never on the command line. `TZ` is
-   always proposed (`tzdata` is in the base image); `LANG` is passed as before.
-9. **Config files** are mounted read-only at their host path. Files that look like they hold
-   credentials get a `⚠` in the plan. Known secret files are never proposed (see each language).
+### 3.9 Cross-cutting rules
+
+1. **Ask the host's own tools** for versions and facts (D2), resolving shims through their manager
+   (jEnv, Volta, asdf, mise, rustup), never by `readlink` on the shim.
+2. **Recreate symlink chains** the host uses (SDKMAN `current`, `default-java` via its package).
+3. **apt items are installed with apt** at the host's version when the distro archive has it (this
+   release, `-updates`, `-security`); a host behind the archive gets the archive's version and a ⚠
+   (D15); third-party or backports-only versions are left out with a ⚠.
+4. **CA certificates and locales** of the host go into the image; time zone, proxies and the umask
+   are passed, as in part 1.
+5. **Env variables** are picked like everything else. Secret-looking names (`*TOKEN*`, `*SECRET*`,
+   `*PASSWORD*`, `*KEY*`, `*CREDENTIAL*`, `*AUTH*`, URLs with a password) are never suggested and
+   their values are never shown or stored, only a hash. Passed by name with `docker run -e NAME`.
+6. **Mounted files that look like they hold credentials** get a ⚠ (D20: picking one asks).
+7. **Settings in parent directories** (`go.work`, `.cargo/config.toml`) are offered in the
+   picker when the host has them, with a ⚠ for paths outside the repository.
 
 ### 3.10 UI
 
-- `lib/ui.sh` has `die`/`warn`/`note` and `ui_paint red|yellow|green|dim TEXT`; nothing else
-  uses escape codes.
-- Color only when stderr is a terminal and `TERM` isn't `dumb`. `NO_COLOR` turns it off;
-  `--color=auto|always|never` overrides. All launcher output goes to stderr, so agent output is
-  never colored by go-yolo.
-- Colored meaning: plan diff (`+` green, `-` red, `~` yellow), warnings yellow, errors red,
-  banner `yolo=ON` red, `net=open` yellow, `net=allowlist|none` green.
-- Every colored marker also has a text form, so nothing is lost without color.
-- fzf is used only when installed and stdin/stderr are terminals, through helpers like
-  `ui_pick_many <prompt> <preview-cmd>` whose fallback lives in the same function. Uses: plan
-  editing (3.8), agent picker (`go-yolo.sh` without an agent), `--prune`.
+As in part 1: colors on terminals (`NO_COLOR`, `--color`), every colored marker also as text,
+fzf through `lib/ui.sh` helpers with plain fallbacks. New uses: the setup picker, the plan's
+exclude-from-prompt, the agent picker (`go-yolo.sh` without an agent).
+
+### 3.11 Later: AI-proposed recipes (D22)
+
+For an item no catalog recipe knows (shown as "copy"), the picker can offer `[a] ask AI`:
+
+1. go-yolo collects facts about the item: its path, `release` file, `--version` output, file
+   hashes.
+2. It asks an available agent (e.g. `claude -p`, with the user's login) for a recipe **in the
+   recipe format**: one of the known methods (apt `name=version`, a vendor download with its
+   checksum URL, a manager command). Never free-form shell: recipes run as root in the build.
+3. go-yolo validates it: the download host must be the vendor's, the checksum is fetched from the
+   vendor, never taken from the AI.
+4. It test-builds the recipe and **compares the result with the host's artifact** (a binary's hash,
+   the `release` file, `--version`). Only a match is offered, marked "proposed by AI, verified".
+5. An accepted recipe is saved in `.go-yolo/config`, so the AI is asked once per item.
+
+The host's artifact is the answer key, which turns "trust the AI" into "check the AI". Without a
+login, offline, or on a mismatch, the item stays a copy. The same verify-against-the-host step
+also helps when writing new catalogs.
 
 ## 4. Phases
 
-Each phase is shippable on its own: behaviour that a phase hasn't replaced yet keeps working the
-old way. Each phase updates the README and the tests.
+Part 2's phases each leave go-yolo working. Each updates the README and the tests.
 
-### Step 1 — Split the launcher (no behaviour change) — done
+### 4.1 Done in part 1
 
-- Move `go-yolo.sh` into `lib/` modules as in 3.2; `go-yolo.sh` becomes the step list.
-- Add `lib/ui.sh` with colors, `NO_COLOR` and `--color`.
-- Tests stay in `tests/run.sh` for now; they get split per module once phase 0 adds modules
-  with logic of their own.
+- **Step 1**: the launcher split into `lib/` modules; colors.
+- **Phase 0**: `.go-yolo/`, the git-root rule, the plan with diff and confirmation, the base and
+  project images, packages (never downgrading), CAs, time zone, proxies, locales, umask,
+  base-vs-host `parity` warnings, `--prune`, `--parity`.
+- **Go**: `packs/go.sh`. GOROOT and GOBIN copied, module and build caches project-local with the
+  module seed as the first `GOPROXY` entry, cgo `pkg-config` packages, `go.work`. Checked:
+  `--parity` all 48 probes matching, `go run` with `--net none`, the host's `~/go` untouched.
+- **Java**: `packs/java.sh`. Every JDK Gradle or Maven could pick (apt or copied), Maven and
+  Gradle settings, project caches with read-only seeds (`maven.repo.local.tail`,
+  `GRADLE_RO_DEP_CACHE`), wrapper caches starting as copies; `extra tool` replacing `GOYOLO_TOOLS`.
+  Checked on a Gradle project with a JDK 25 toolchain, offline after one online run.
 
-Done when: `tests/run.sh` and `tests/docker.sh` pass unchanged (apart from color-aware output
-checks), and `--dry-run` output is identical to before for the test fixtures.
+### 4.2 Phase A: restructure (no behaviour change)
 
-### Phase 0 — Project images, plan and confirmation — in progress
+From the part-1 review; makes part 2 easier to build and to read.
 
-Done so far: `.go-yolo/` and the project checks; the plan with diff, confirmation (prompt,
-`--yes`, refusal without a terminal) and `$EDITOR` editing; `.go-yolo/config`; base image
-`go-yolo-base:…` and the generated project image; packages (rule 4), CAs, time zone, proxies,
-extra env; `parity` warnings for base image packages whose version differs from the host's
-(the base is built after the first confirmation, then the plan is resolved and confirmed again
-before the project image). `--prune` (with the first fzf helper, `ui_pick_many`); `--parity` (packs' `<pack>_probe`
-functions, run on both sides); the two gaps it found right away are closed: the host's umask
-is applied, and the host's locales (`LANG`, `LC_*`) are generated in the project image as
-`locale` items, with `LANGUAGE` passed through. Still to do: fzf
-editing, the agent picker. Named contexts and
-ownership (`--chown`) come with the first pack that copies a toolchain (phase 1).
+- Split `lib/plan.sh` (655 lines) into `plan.sh`, `kinds.sh`, `apt.sh`, `confirm.sh`; declare the
+  kinds in one table; separate `attrs` from `notes`; one helper to loop over plan items instead of
+  the repeated `IFS=$'\t' read -r …`.
+- Rename `packs/` to `catalogs/`, discover catalogs and agents from their directories, write
+  `catalogs/README.md` (the contract and a template).
+- Fix: a `from-host` cache copy goes to a temporary directory and is renamed when complete, so an
+  interrupted copy is retried.
+- Split `tests/run.sh` (700 lines) per module; document the test hooks (`GOYOLO_OS_RELEASE`,
+  `GOYOLO_CA_DIR`, `GOYOLO_LOCALES_SUPPORTED`, `GOYOLO_JVM_DIR`) in `tests/README.md`.
 
-- `lib/project.sh`: git-root check (D9), `.go-yolo/` creation and checks (3.5), tmpfs cover,
-  `.dockerignore` warning.
-- `lib/plan.sh`: plan format, helpers, render, diff, confirm, `--yes`, non-TTY refusal,
-  `.go-yolo/config` parsing, fzf editing with `$EDITOR` fallback.
-- `lib/image.sh`: base image as `go-yolo-base:…`, generated project Dockerfile, named
-  contexts, ownership, labels.
-- Cross-cutting rules 4, 5 and 8 (packages, CAs, env vars). Rules 3 (apt-installed toolchains,
-  third-party sources) and 9 (config files) come with the first pack that needs them.
-- `--parity`: run the same probes on the host and in the container and show the differences
-  (env vars, plus whatever each language pack adds).
-- `--prune`: list go-yolo images with project, plan date, size and whether the project still
-  exists; delete the selected ones.
-- Agent picker when no agent is given.
+Done when: all tests pass unchanged and the plans of the test fixtures are identical.
 
-Done when: a project without any language markers gets a confirmed plan, a project image
-(base + CAs + extra packages + env), the hidden `.go-yolo/`, and `--parity` shows no unexpected
-differences. Changing a host package version shows a diff and rebuilds after confirmation.
+### 4.3 Phase B: selection (D17, D20)
 
-### Phase 1 — Go — done
+- `lib/config.sh`: the selection format (3.4), replacing `extra`/`exclude`. A part-1 config is
+  converted once (each `extra` becomes a picked item, each `exclude` an unpicked one).
+- `lib/setup.sh`: the picker (3.8) with fzf and a numbered-list fallback; `--setup`.
+- Catalogs gain `<name>_discover`; resolution runs only for picked items. The part-1 detection
+  (marker-based resolution, cgo scanning, `go.work` parsing, the Gradle-vs-Maven JDK scoping)
+  becomes discovery plus one-off hints, or goes away.
+- Quieter confirmation (D20): ask only on selection or exposure changes; summary by default,
+  `--plan` for details; exclude a ⚠ item from the prompt; the base image built without asking.
+- `--prune` also shows the size of each project's `.go-yolo/cache`.
 
-Implemented as `packs/go.sh`, with new generic plan items (`toolchain`/`tools` copies via named
-build contexts with host ownership, `link`, `mount`, `cache`, `seed`, `domain`) and values go-yolo
-sets itself passed as `-e NAME=VALUE` (flag `derived`). Checked on a real module: `--parity`
-reports all 48 probes matching, `go run` works offline (`--net none`) from the seed, and the
-host's `~/go` and `~/.cache/go-build` stay untouched. Decided: a `go.work` outside the repository,
-and the modules it uses outside it, are mounted read-only with a warning (add `--mount DIR:rw` to
-change them). Known gap: private modules missing from the seed are fetched directly and fail
-without credentials (`~/.netrc` opt-in comes later).
+Done when: a new Go project and a new Gradle project are set up through the picker (with and
+without fzf), the result matches part 1's for the same picks, and a host upgrade of a picked item
+rebuilds without a prompt.
 
-- Detect: `go.mod`, `go.work`.
-- Resolve: `go env GOROOT GOVERSION GOTOOLCHAIN GOENV GOWORK GOMODCACHE GOCACHE GOPATH`.
-- Toolchain: GOROOT (apt `golang-*` or copy). Tools from `$GOPATH/bin` (or `GOBIN`), user-owned.
-- Files: `GOENV` file; `go.work` if outside the repo (and a warning for its `use` paths).
-- Env candidates: `GOFLAGS GOPRIVATE GONOPROXY GONOSUMDB GOPROXY GOSUMDB GOTOOLCHAIN GOEXPERIMENT
-  CGO_ENABLED CC CXX CGO_CFLAGS CGO_LDFLAGS`.
-- Seed: `GOMODCACHE/cache/download` as `GOPROXY=file://…,<host GOPROXY>` (prepended to the
-  host's own GOPROXY value, so the fallback is unchanged).
-- Caches: `GOMODCACHE` and `GOCACHE` at their host paths, backed by `.go-yolo/cache/go-mod` and
-  `go-build`. Toolchains downloaded via `GOTOOLCHAIN` land in the module cache.
-- Secrets never proposed: `~/.netrc` (opt-in with `extra file`).
-- Domains: `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`; plus the host's
-  GOPROXY hosts.
-- Removes: the GOROOT/GOPATH/GOCACHE host mounts and `GOYOLO_GOPATH_MODE` (warn if still set).
+### 4.4 Phase C: install recipes for Go and Java (D18, D19)
 
-Done when: for this repo and a cgo project (e.g. sqlite), `go build ./...`, `go test ./...` and
-`go generate ./...` behave the same on host and in container; `--parity` shows identical `go env`
-(apart from documented GOPROXY seeding); the host's `~/go` is never written.
+- `lib/`: the recipe format, checked downloads (the vendor's checksum or signature), install steps
+  as root or as the user (3.7), copy as the labelled fallback.
+- Go: the go.dev tarball (SHA-256 from go.dev); tools via `go install path@version` from
+  `go version -m`; `(devel)` builds copied.
+- Java: apt JDKs as today; Temurin JDKs (vendor from the `release` file) from the Adoptium API with
+  its checksum; Maven and Gradle distributions from their release URLs with checksums; other JDKs
+  copied.
+- `--parity` and the plan verify an installed item against the host (e.g. the hash of `bin/go`,
+  the JDK's `release` file).
 
-### Phase 2 — Rust — TBD
+Done when: the part-1 Go and Java checks pass with installed (not copied) toolchains, and the
+plan shows which items are copies and why.
 
-Not started: Rust isn't installed on the host. The design below stands; build it once there is a
-real rustup setup to mirror and test against.
+### 4.5 Phase D: Android
 
-- Detect: `Cargo.toml`.
-- Resolve: `rustup which rustc` (in the repo), `rustup toolchain list`, `rustup show`.
-- Toolchain: rustup itself plus **all** installed toolchains (D4) and `~/.rustup/settings.toml`
-  (default toolchain and directory overrides). Distro `rustc`/`cargo` via apt if that's what the
-  host uses.
-- Tools: `~/.cargo/bin` minus the rustup proxies, user-owned.
-- Files: `~/.cargo/config.toml`, plus `.cargo/config.toml` and `rust-toolchain.toml` from parent
-  directories.
-- Env candidates: `RUSTFLAGS RUSTDOCFLAGS RUSTC_WRAPPER CARGO_BUILD_TARGET CARGO_TARGET_DIR
-  CARGO_INCREMENTAL CARGO_NET_GIT_FETCH_WITH_CLI CARGO_REGISTRIES_*`, `CC`, `CXX`.
-- Caches: `~/.cargo/registry`, `~/.cargo/git` (and the sccache dir when `RUSTC_WRAPPER` is
-  sccache), backed by `.go-yolo/cache/`. No seed (Cargo has no read-only cache layer;
-  `Cargo.lock` and checksums keep the result identical).
-- Warn when `CARGO_TARGET_DIR` or `target-dir` points outside the repo.
-- Secrets never proposed: `~/.cargo/credentials.toml`.
-- Domains: `index.crates.io`, `static.crates.io`, `crates.io`, `static.rust-lang.org`.
-
-Done when: `cargo build`, `cargo test` and `cargo +<other toolchain> build` behave the same on host
-and container for a project with a `-sys` crate and one with `rust-toolchain.toml`.
-
-### Phase 3 — Node — TBD
-
-Not started: Node isn't installed on the host (only the agents' own Node in the base image). The
-design below stands; build it once there is a real setup to mirror.
-
-- Prerequisite: move the agents' Node to `/opt/go-yolo/node` with wrapper scripts, so the
-  project's Node (including one in `/usr/local` from `n` or a tarball) never collides with it.
-- Detect: `package.json`.
-- Resolve: `volta which node`, `mise where node`, else `command -v node` with fnm/nvm symlinks
-  resolved; `npm prefix -g`; `corepack --version`; `command -v pnpm yarn`.
-- Toolchain: the Node install dir (apt, NodeSource via apt, or copy), with its global packages and
-  corepack shims. A custom global prefix (`~/.npm-global`) and a standalone pnpm are copied too.
-- Files: `~/.npmrc` (⚠ when it contains `_authToken`), `~/.yarnrc.yml`, `~/.config/pnpm/rc`.
-- Env candidates: `NODE_OPTIONS NODE_ENV NODE_EXTRA_CA_CERTS npm_config_* COREPACK_* PNPM_HOME
-  PLAYWRIGHT_BROWSERS_PATH PUPPETEER_* CYPRESS_CACHE_FOLDER`.
-- Seeds: `~/.cache/node/corepack`, `~/.cache/node-gyp`, `~/.cache/ms-playwright`,
-  `~/.cache/Cypress`, `~/.cache/puppeteer` (read-only; used through env vars or as a copy source,
-  to be settled per tool during the phase).
-- Caches: `~/.npm`, the pnpm store, the yarn global cache, backed by `.go-yolo/cache/`.
-- Domains: `registry.npmjs.org` (already allowed), `repo.yarnpkg.com`, the host's registry from
-  `.npmrc`.
-
-Done when: `npm ci && npm test` (and the pnpm/yarn equivalents with `packageManager`) behave the
-same on host and container, including a project with a native addon whose `node_modules` built in
-the container then works on the host.
-
-### Phase 4 — Java (JDK, Maven, Gradle) — done
-
-Implemented as `packs/java.sh`, plus `extra tool NAME` (any host command: its apt packages or its
-install directory) replacing `GOYOLO_TOOLS`, whose mounts are gone. Details that differ from the
-list below:
-- Only the default JDK is on PATH (flag `on-path`); the others are where Gradle and Maven look.
-- apt JDKs are installed with apt (rule 3), and so are links owned by a package (`default-java`
-  from `default-jre-headless`); other links become `link` items.
-- Gradle's provisioned JDKs and `installations.paths` only count for Gradle projects,
-  `toolchains.xml` only for Maven projects; likewise their env variables.
-- The wrapper caches (`~/.gradle/wrapper`, `~/.m2/wrapper`) can't be read-only seeds (the wrapper
-  locks its distribution), so they are project caches that start as a copy of the host's
-  (`from-host`).
-- Mounted files that look like they hold credentials get a ⚠ (`may-hold-secrets`), in any pack.
-Checked on a real Gradle project with a JDK 25 toolchain: Gradle found the copied provisioned
-JDK, `gson` came from the read-only seed, a jar missing from the host's cache was downloaded into
-the project cache, the next build worked offline, and `~/.gradle` stayed untouched. `--parity`
-showed only the host's OpenJDK being one security update behind the archive (the plan's ⚠).
-
-- Detect: `pom.xml`, `mvnw`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradlew`.
-- Resolve the default JDK: `$JAVA_HOME`, `jenv javahome`, `mise where java`, else `command -v java`
-  (Java 8 `jre/` layout handled as today).
-- **All toolchain JDKs (D4)**: `/usr/lib/jvm/*`, `~/.sdkman/candidates/java/*`, `~/.jdks/*`,
-  `~/.gradle/jdks/*`, `~/.asdf`/mise Java installs, `org.gradle.java.installations.paths`,
-  and the JDKs listed in `~/.m2/toolchains.xml`.
-- Maven / Gradle installs when the project has no wrapper (`command -v mvn gradle`, SDKMAN
-  candidates, apt).
-- Files: `~/.m2/settings.xml`, `~/.m2/toolchains.xml`, `GRADLE_USER_HOME/gradle.properties`,
-  `GRADLE_USER_HOME/init.gradle(.kts)`, `GRADLE_USER_HOME/init.d/*`.
-- Env candidates: `JAVA_HOME JAVA_OPTS JAVA_TOOL_OPTIONS _JAVA_OPTIONS MAVEN_OPTS MAVEN_ARGS
-  GRADLE_OPTS GRADLE_USER_HOME` and `ORG_GRADLE_PROJECT_*` (with the secret-name filter).
-- Seeds: `~/.m2/repository` via `-Dmaven.repo.local.tail`, passed in `MAVEN_ARGS` (both need
-  Maven ≥ 3.9; older Mavens run without the seed), `GRADLE_USER_HOME/caches` via
-  `GRADLE_RO_DEP_CACHE`, `~/.m2/wrapper` and `GRADLE_USER_HOME/wrapper/dists`.
-- Caches: `~/.m2/repository`, `GRADLE_USER_HOME/caches`, `GRADLE_USER_HOME/wrapper` at their
-  host paths, backed by `.go-yolo/cache/m2` and `gradle`.
-- The JDK `cacerts` comes with the JDK copy or package (and rule 5).
-- Secrets never proposed: `~/.m2/settings-security.xml`.
-- Domains: `repo.maven.apache.org`, `repo1.maven.org`, `services.gradle.org`,
-  `downloads.gradle.org`, `plugins.gradle.org` (most are already allowed), plus repositories
-  from `settings.xml`.
-- Removes: `GOYOLO_TOOLS` and the tool host mounts (warn if still set; `extra tool` replaces it).
-
-Done when: a Maven project, a Gradle project with `gradlew`, and a Gradle project using
-`java { toolchain { … } }` behave the same on host and container; `--parity` shows identical
-`java -XshowSettings:properties -version`, `mvn -v` and `gradle -v`.
-
-### Phase 5 — Android
-
-- Detect: `com.android.*` plugins in Gradle files, `local.properties` with `sdk.dir`,
-  `AndroidManifest.xml`.
-- Resolve: `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `sdk.dir` from `local.properties`.
-- Toolchain: **the whole SDK** at its host path (D4), copied first among the project layers so
-  Android projects share it. Includes accepted licenses (`licenses/`).
-- Files: `~/.android/debug.keystore` (read-only; otherwise debug APKs built in the container are
-  signed with a different key and can't be installed over host builds).
-- Env candidates: `ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK_HOME`.
-- Secrets never proposed: release keystores, `keystore.properties`.
-- Domains: `dl.google.com`, `maven.google.com`.
-- Out of scope: adb to devices, the emulator.
+- Discover: the SDK (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, `sdk.dir` in `local.properties`),
+  `sdkmanager --list_installed`, `~/.android/debug.keystore`.
+- Recipe: cmdline-tools from dl.google.com with its checksum, then `sdkmanager` with the picked
+  components at the host's versions, as the user, at the host's SDK path; licences from the host.
+- Mount `~/.android/debug.keystore` read-only (otherwise debug APKs are signed with a different
+  key and won't install over host builds); release keystores and `keystore.properties` are
+  secrets, never suggested.
+- Env: `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`. Domains: `dl.google.com`,
+  `maven.google.com`.
+- Devices (adb over USB, the emulator): D21, TBD.
 
 Done when: `./gradlew assembleDebug test` behaves the same on host and container, and the debug
 APK built in the container installs over one built on the host.
 
+### 4.6 Phase E: Arduino
+
+- Discover: `arduino-cli` and its config (`arduino-cli config dump`: directories, board manager
+  URLs), `core list` and `lib list` (JSON).
+- Recipe: arduino-cli from its GitHub release with checksums; `core install`/`lib install` at the
+  host's versions, as the user, at the host's data directory; `arduino-cli.yaml` mounted read-only.
+- Caches: the download staging directory, seeded from the host.
+- Domains: `downloads.arduino.cc`, the board manager URLs' hosts.
+- Uploading to a board: D21, TBD. Compiling (`arduino-cli compile`) works without it.
+
+Done when: `arduino-cli compile` of a sketch gives the same binary on host and container.
+
+### 4.7 Later
+
+- **Rust** and **Node** (TBD, D14): the catalog rows in 3.3 are the design; build them once there
+  is a real setup to test against. Node first needs the agents' Node moved to `/opt/go-yolo/node`,
+  so a project's Node never collides with it.
+- **AI-proposed recipes** (3.11), after phase C (it needs the recipe format and the verification).
+- **Go rewrite** of the launcher: the strongest remaining reasons are parsing XML, JSON and
+  `.properties` files with `sed` (a commented-out `<localRepository>` is read wrongly) and the
+  size of the plan code. Decide after phase B.
+- **Devices** (D21).
+
 ## 5. Tests
 
-- **Unit tests per module** (no Docker): stub commands from `tests/fixtures/`, as today.
-- **Golden plans per language**: a fixture host (stubbed `go`, `rustup`, `dpkg-query`, …) plus a
-  fixture project produce a plan that is compared with `tests/golden/<case>.plan`.
-- **Dockerfile generation** compared with golden files.
-- **Container tests** (`tests/docker.sh`): privilege drop, tmpfs cover of `.go-yolo`, cache
-  persistence across two runs, ownership of copied directories, firewall.
-- **Parity tests**: `--parity` on sample projects per language.
+- **Unit tests per module** (no Docker), with stub commands from `tests/fixtures/`.
+- **Catalog tests**: a fixture host plus a fixture selection give a plan compared with
+  `tests/golden/<case>.plan`; the same for the generated Dockerfile.
+- **Picker tests** through `script(1)` and an fzf stub, as for `--prune` today.
+- **Container tests** (`tests/docker.sh`): privilege drop, the `.go-yolo` cover, umask, locales,
+  firewall; later install steps as the user.
+- **Parity tests**: `--parity` on sample projects per catalog.
 
 ## 6. Known limitations and open items
 
-- `go.work` that `use`s modules outside the repo: those modules must be mounted. Read-only by
-  default? Settle in phase 1.
+- Private Go modules (`GOPRIVATE`) missing from the seed are fetched directly and fail without
+  credentials (a `~/.netrc` opt-in would be an exposure change, D20).
 - Maven SNAPSHOT dependencies and version ranges can resolve differently, because the container's
   cache state differs from the host's.
-- `--net allowlist` / `none` can make downloads fail where they succeed on the host. That is
-  expected, and documented.
-- pnpm can't hardlink across mounts and falls back to copying (same result, slower).
+- `--net allowlist` / `none` can make downloads fail at run time where they succeed on the host.
 - The Gradle read-only cache must not change while in use; a host Gradle build running at the
   same time could in theory disturb it.
-- Exact apt versions disappear from the archive when the host lags behind; the copy fallback
-  covers this, but its dependency list is approximate.
-- Which host packages count as "build packages" (rule 4) may need tuning after real use.
-- Per-project images use more disk. `--prune` and layer ordering mitigate it.
-- Writes to user-owned copied directories (`go install`, `npm i -g`) don't persist after the
-  container exits.
-- The per-project image contains the user's UID/GID (for `--chown`), so it is not shareable
-  between users. That is acceptable: it is a local image.
+- A vendor can withdraw an old version; its recipe then fails and the item falls back to a copy
+  (with a ⚠).
+- Per-project images and caches use disk; `--prune` (with cache sizes, phase B) helps.
+- Writes to user-owned items in the image (`go install`, `npm i -g`) don't outlive the container.
+- The project image contains the user's UID/GID, so it isn't shareable between users (it is a
+  local image).
+- The base image's own packages can differ from the host's (`parity` notes) until the host is
+  upgraded or the base rebuilt.
