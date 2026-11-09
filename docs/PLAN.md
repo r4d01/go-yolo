@@ -12,9 +12,10 @@ build that fails on the host fails the same way in the container.
 
 Part 1 got there by detecting what a project needs (marker files, cgo `pkg-config` lines,
 `go.work`, which JDKs Gradle or Maven could pick) and copying the host's toolchains. That works,
-but the detection is the most complex and least predictable part, and copied host files can't be
-checked for integrity. Part 2 keeps everything else (the plan, confirmation, project images,
-project-local caches with read-only seeds, `--parity`, `--prune`) and changes two things:
+but the detection is the most complex and least predictable part, copied host files can't be
+checked for integrity, and the read-only seeds of the host's caches let one project's agent read
+every other project's dependencies. Part 2 keeps the rest (the plan, confirmation, project
+images, `--parity`, `--prune`) and changes three things:
 
 1. **Selection instead of detection.** A setup picker lists what the host has; you pick what the
    container gets and how (in the image, mounted, cached). The choice is saved and never
@@ -22,6 +23,9 @@ project-local caches with read-only seeds, `--parity`, `--prune`) and changes tw
 2. **Install instead of copy.** Picked items are installed in the image from their source (a
    vendor download with its checksum, the ecosystem's own manager, apt) at the host's versions;
    copying host files is the fallback for items nothing knows how to install.
+3. **Caches in Docker volumes, nothing shared.** Each project's caches live in its own Docker
+   volumes, mounted at the host's cache paths. The host's caches are no longer seeds: a project's
+   first build downloads its dependencies.
 
 ## 2. Decisions
 
@@ -33,7 +37,7 @@ project-local caches with read-only seeds, `--parity`, `--prune`) and changes tw
 | D4 | ~~Truly identical beats small: every JDK the build could pick, the whole Android SDK, ...~~ Superseded by D17: identical *as configured*; the picker shows everything the host has, and `--parity` points out what the container lacks. |
 | D5 | **Same paths as on the host** for everything: toolchains, config files, caches. Symlink chains the host uses (e.g. SDKMAN `current`) are recreated. |
 | D6 | **Same ownership as on the host.** Root-owned on the host means root-owned in the image; user-owned (`~/go/bin`, `~/.rustup`, `~/Android/Sdk`) means installed as the user, so `go install`, `npm i -g` and the like work as on the host. Such writes live only as long as the container. |
-| D7 | **Project-local, persistent caches** in `<repo>/.go-yolo/cache/`, mounted read-write at the host's cache paths. **Host caches are read-only seeds** where the tool supports it; a cache a tool must write to (e.g. a wrapper's distributions) starts as a copy of the host's. Nothing is ever written to the host's own caches. |
+| D7 | **Per-project caches in Docker volumes**, one per cache (`go-yolo-<project>-<pathhash>-<cache>`, labelled with the project path and the cache), mounted at the host's cache paths (`~/go/pkg/mod`, `~/.gradle/caches`, ...). **Nothing is shared with the host's caches**, not even read-only: a seed would let one project's agent read every other project's dependencies, private modules included. The first build of a project downloads what it needs (lockfiles keep the result identical); more disk and a slower first build are accepted. A new volume is root-owned, so the entrypoint hands it to the user before dropping privileges. *(Part 1 had `.go-yolo/cache/` plus read-only seeds and from-host copies; superseded.)* |
 | D8 | **`.go-yolo/` is hidden from the container** (covered by an empty, read-only tmpfs) and **ignores itself in git** (`.go-yolo/.gitignore` containing `*`). |
 | D9 | **Must run from the git repository root.** Anywhere else is an error. |
 | D10 | **Confirm before building.** The plan (what is installed, how, what is set and mounted) is shown and confirmed before anything is built. D20 limits *when* it asks. |
@@ -108,7 +112,7 @@ the host's manager can list. A catalog implements five functions, prefixed with 
 | `<name>_discover` | list what the host has: the picker's candidates, each with a group, an id, a description, a size, a default mode, and whether a hint pre-selects it | GOROOT, each tool in GOBIN, the module and build caches, the GOENV file, Go env variables |
 | `<name>_resolve ID` | for a picked item, read its version and facts from the host now (D2) | `go env GOVERSION`; `go version -m ~/go/bin/gopls` → `golang.org/x/tools/gopls v0.21.0` |
 | `<name>_recipe ID` | how to install it in the image (D18) | the go.dev tarball + SHA-256; `go install golang.org/x/tools/gopls@v0.21.0` |
-| `<name>_glue ID` | runtime wiring for picked caches and settings | `GOPROXY=file://<seed>,…` for the module seed |
+| `<name>_glue ID` | runtime wiring for picked caches and settings | `GOMODCACHE` and `GOCACHE` pointing at their volumes' paths |
 | `<name>_probe` | `--parity` probes, run on both sides | `go version`, `go env`, the tools |
 
 How the ecosystems fit:
@@ -135,14 +139,14 @@ One picked item per line, written by the picker and editable by hand (parsed, ne
 # mode   catalog  kind       id                        options
 image    go       toolchain
 image    go       tool       gopls
-cache    go       modules                              seed
+cache    go       modules
 cache    go       build
 mount    go       goenv
 env      go       GOPRIVATE
 image    java     jdk        /usr/lib/jvm/java-21-openjdk-amd64
 image    java     jdk        /home/me/.gradle/jdks/eclipse_adoptium-25-amd64-linux.2
-cache    gradle   caches                               seed
-cache    gradle   wrapper                              from-host
+cache    gradle   caches
+cache    gradle   wrapper
 mount    gradle   properties
 image    android  sdk        platforms;android-35
 image    arduino  core       arduino:avr
@@ -152,8 +156,7 @@ env      host     GITHUB_TOKEN
 ```
 
 - Modes: `image` (installed in the image), `mount` (read-only at the same path), `cache`
-  (project-local, at the host's path; options `seed`, `from-host`), `env`. `device` if D21
-  happens.
+  (the project's Docker volume, at the host's path), `env`. `device` if D21 happens.
 - The config holds **what**, the plan holds **which version and how**.
 - Options override a recipe choice (`copy` forces a copy).
 - The container can't see this file, and a repo can't ship it (3.6): a trusted source of settings.
@@ -166,18 +169,19 @@ part 1, with two changes:
 - **Kinds are declared in one table** (`lib/kinds.sh`): for each kind its sort rank, whether it
   goes into the image, how it is shown, and which function emits its Dockerfile lines or
   `docker run` arguments. Adding a kind means one row, not edits in five places.
-- **Behaviour and notes are separate fields.** `attrs` change what go-yolo does (`on-path`,
-  `from-host`, `derived`, `user`); `notes` only explain (`host-older=…`, `secret`, `outside-repo`).
+- **Behaviour and notes are kept apart.** A flag table says which flags change what go-yolo does
+  (`on-path`, `derived`, `user`) and which only explain (`host-older=…`, `secret`,
+  `outside-repo`); code asks for a behaviour flag through one helper, display shows only notes.
 
 The image tag still includes a hash of the build-time lines, so a version change rebuilds. The
 confirmed plan stays in `.go-yolo/plan`.
 
 ### 3.6 `.go-yolo/` directory
 
-Unchanged from part 1: `config`, `plan`, `build/` (generated Dockerfile and staged files), `cache/`.
-It must be a plain directory owned by the user with nothing tracked by git; the container sees an
-empty read-only tmpfs; a project with a Dockerfile but no `.go-yolo/` in `.dockerignore` gets a
-one-time warning.
+`config`, `plan` and `build/` (generated Dockerfile and staged files); the caches moved to Docker
+volumes (D7), so `.go-yolo/` stays small and holds no read-only module files. It must be a plain
+directory owned by the user with nothing tracked by git; the container sees an empty read-only
+tmpfs. (The `.dockerignore` warning goes away with the caches.)
 
 ### 3.7 Images
 
@@ -211,7 +215,7 @@ go-yolo: what should this project's container get?   (TAB: pick · Enter: done)
   > [x] toolchain go1.27.0        /opt/go/1.27.0            install: go.dev tarball (sha256)
     [x] tool gopls v0.21.0        ~/go/bin/gopls            install: go install …@v0.21.0
     [ ] tool my-tool (devel)      ~/go/bin/my-tool          copy: built locally
-    [x] cache modules (+ seed)    ~/go/pkg/mod              project cache, host's as seed
+    [x] cache modules             ~/go/pkg/mod              project volume (starts empty)
   java
     [ ] jdk 21.0.12 (apt)         /usr/lib/jvm/java-21-…    install: apt
     [ ] jdk 25.0.3 (Temurin)      ~/.gradle/jdks/…          install: Adoptium (sha256)
@@ -284,11 +288,13 @@ Part 2's phases each leave go-yolo working. Each updates the README and the test
   project images, packages (never downgrading), CAs, time zone, proxies, locales, umask,
   base-vs-host `parity` warnings, `--prune`, `--parity`.
 - **Go**: `packs/go.sh`. GOROOT and GOBIN copied, module and build caches project-local with the
-  module seed as the first `GOPROXY` entry, cgo `pkg-config` packages, `go.work`. Checked:
-  `--parity` all 48 probes matching, `go run` with `--net none`, the host's `~/go` untouched.
+  module seed as the first `GOPROXY` entry (the seed goes in phase A), cgo `pkg-config` packages,
+  `go.work`. Checked: `--parity` all 48 probes matching, `go run` with `--net none`, the host's
+  `~/go` untouched.
 - **Java**: `packs/java.sh`. Every JDK Gradle or Maven could pick (apt or copied), Maven and
   Gradle settings, project caches with read-only seeds (`maven.repo.local.tail`,
-  `GRADLE_RO_DEP_CACHE`), wrapper caches starting as copies; `extra tool` replacing `GOYOLO_TOOLS`.
+  `GRADLE_RO_DEP_CACHE`) and wrapper caches starting as copies (both go in phase A); `extra tool`
+  replacing `GOYOLO_TOOLS`.
   Checked on a Gradle project with a JDK 25 toolchain, offline after one online run.
 
 ### 4.2 Phase A: restructure (no behaviour change)
@@ -300,12 +306,19 @@ From the part-1 review; makes part 2 easier to build and to read.
   the repeated `IFS=$'\t' read -r …`.
 - Rename `packs/` to `catalogs/`, discover catalogs and agents from their directories, write
   `catalogs/README.md` (the contract and a template).
-- Fix: a `from-host` cache copy goes to a temporary directory and is renamed when complete, so an
-  interrupted copy is retried.
+- **Caches in Docker volumes (D7)**, the one behaviour change of this phase: the `cache` kind
+  becomes a named volume at the host's path (labels `go-yolo.project`, `go-yolo.cache`); the
+  entrypoint chowns a new, root-owned volume before the privilege drop; the `seed` kind,
+  `from-host`, the `GOPROXY`/`GRADLE_RO_DEP_CACHE`/`maven.repo.local.tail` wiring and the
+  `.dockerignore` warning are removed; `--prune` lists and removes the volumes (with their size,
+  and "project is gone" like images). Existing `.go-yolo/cache/` directories are left alone, with a
+  one-time note that they can be deleted.
 - Split `tests/run.sh` (700 lines) per module; document the test hooks (`GOYOLO_OS_RELEASE`,
   `GOYOLO_CA_DIR`, `GOYOLO_LOCALES_SUPPORTED`, `GOYOLO_JVM_DIR`) in `tests/README.md`.
 
-Done when: all tests pass unchanged and the plans of the test fixtures are identical.
+Done when: all tests pass (with the cache tests rewritten for volumes) and the plans of the test
+fixtures are identical apart from the cache and seed items; a Go and a Gradle project build with
+their caches in volumes, a second run reuses them, and nothing on the host is read or written.
 
 ### 4.3 Phase B: selection (D17, D20)
 
@@ -317,7 +330,6 @@ Done when: all tests pass unchanged and the plans of the test fixtures are ident
   becomes discovery plus one-off hints, or goes away.
 - Quieter confirmation (D20): ask only on selection or exposure changes; summary by default,
   `--plan` for details; exclude a ⚠ item from the prompt; the base image built without asking.
-- `--prune` also shows the size of each project's `.go-yolo/cache`.
 
 Done when: a new Go project and a new Gradle project are set up through the picker (with and
 without fzf), the result matches part 1's for the same picks, and a host upgrade of a picked item
@@ -360,7 +372,7 @@ APK built in the container installs over one built on the host.
   URLs), `core list` and `lib list` (JSON).
 - Recipe: arduino-cli from its GitHub release with checksums; `core install`/`lib install` at the
   host's versions, as the user, at the host's data directory; `arduino-cli.yaml` mounted read-only.
-- Caches: the download staging directory, seeded from the host.
+- Caches: the download staging directory, in a project volume.
 - Domains: `downloads.arduino.cc`, the board manager URLs' hosts.
 - Uploading to a board: D21, TBD. Compiling (`arduino-cli compile`) works without it.
 
@@ -384,21 +396,22 @@ Done when: `arduino-cli compile` of a sketch gives the same binary on host and c
   `tests/golden/<case>.plan`; the same for the generated Dockerfile.
 - **Picker tests** through `script(1)` and an fzf stub, as for `--prune` today.
 - **Container tests** (`tests/docker.sh`): privilege drop, the `.go-yolo` cover, umask, locales,
-  firewall; later install steps as the user.
+  firewall, the ownership of a new cache volume; later install steps as the user.
 - **Parity tests**: `--parity` on sample projects per catalog.
 
 ## 6. Known limitations and open items
 
-- Private Go modules (`GOPRIVATE`) missing from the seed are fetched directly and fail without
-  credentials (a `~/.netrc` opt-in would be an exposure change, D20).
+- Private Go modules (`GOPRIVATE`) are fetched directly and fail without credentials (there is no
+  seed any more; a `~/.netrc` or SSH opt-in would be an exposure change, D20).
+- A project's first build downloads all its dependencies, so it needs the network (`--net
+  allowlist` must allow the registries; `--net none` only works once the volumes are filled).
 - Maven SNAPSHOT dependencies and version ranges can resolve differently, because the container's
   cache state differs from the host's.
 - `--net allowlist` / `none` can make downloads fail at run time where they succeed on the host.
-- The Gradle read-only cache must not change while in use; a host Gradle build running at the
-  same time could in theory disturb it.
 - A vendor can withdraw an old version; its recipe then fails and the item falls back to a copy
   (with a ⚠).
-- Per-project images and caches use disk; `--prune` (with cache sizes, phase B) helps.
+- Per-project images and cache volumes use disk; `--prune` lists both, with sizes. Volumes of a
+  deleted project stay until `--prune` removes them.
 - Writes to user-owned items in the image (`go install`, `npm i -g`) don't outlive the container.
 - The project image contains the user's UID/GID, so it isn't shareable between users (it is a
   local image).
