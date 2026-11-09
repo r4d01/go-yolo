@@ -136,7 +136,7 @@ project_dockerfile() {
     for line in "${copies[@]}"; do
       IFS=$'\t' read -r path flags <<<"$line"
       number=$((number + 1))
-      if [[ $flags == *user-owned* ]]; then
+      if has_flag "$flags" user-owned; then
         user_parents "$path" created
         printf 'COPY --from=copy%s --chown=%s:%s ["/", %s]\n' "$number" "$HOST_UID" "$HOST_GID" "$(json_string "$path/")"
       else

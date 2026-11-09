@@ -537,7 +537,11 @@ too.
 | `lib/mounts.sh`     | mount safety checks; workdir, extra and git config mounts          |
 | `lib/project.sh`    | git repository root check, the `.go-yolo/` state directory         |
 | `lib/config.sh`     | `.go-yolo/config` parsing                                          |
-| `lib/plan.sh`       | the plan: helpers for packs, showing, diffing and confirming it    |
+| `lib/kinds.sh`      | the plan's item kinds and flags, each declared once                |
+| `lib/plan.sh`       | the plan model: adding, finding, sorting, hashing, saving items    |
+| `lib/apt.sh`        | apt versions and owners; apt package items                         |
+| `lib/items.sh`      | the other helpers catalogs use to add items                        |
+| `lib/confirm.sh`    | showing, diffing and confirming the plan                           |
 | `lib/agent.sh`      | the agent profile and its config mounts                            |
 | `lib/run.sh`        | network mode, tmux decision, the `docker run` command, the banner  |
 | `lib/prune.sh`      | `--prune`: image status, removal                                   |

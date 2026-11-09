@@ -27,8 +27,16 @@ source "$REPO_DIR/lib/mounts.sh"
 source "$REPO_DIR/lib/project.sh"
 # shellcheck source=lib/config.sh
 source "$REPO_DIR/lib/config.sh"
+# shellcheck source=lib/kinds.sh
+source "$REPO_DIR/lib/kinds.sh"
 # shellcheck source=lib/plan.sh
 source "$REPO_DIR/lib/plan.sh"
+# shellcheck source=lib/apt.sh
+source "$REPO_DIR/lib/apt.sh"
+# shellcheck source=lib/items.sh
+source "$REPO_DIR/lib/items.sh"
+# shellcheck source=lib/confirm.sh
+source "$REPO_DIR/lib/confirm.sh"
 # shellcheck source=lib/agent.sh
 source "$REPO_DIR/lib/agent.sh"
 # shellcheck source=lib/run.sh

@@ -604,7 +604,7 @@ base_tag="go-yolo-base:debian-trixie-$(REPO_DIR=$REPO_DIR; source "$REPO_DIR/lib
 mkdir -p "$TEST_DIR/projects/kept/.go-yolo"
 printf '# confirmed: today\nbase\thost\timage\t%s\t-\t-\ncache\tgo\tvolume\t/x/go/pkg/mod\tgo-mod\t-\n' \
   "$base_tag" >"$TEST_DIR/projects/kept/.go-yolo/plan"
-kept_hash="$(source "$REPO_DIR/lib/plan.sh"; confirmed_plan_hash "$TEST_DIR/projects/kept")"
+kept_hash="$(source "$REPO_DIR/lib/kinds.sh"; source "$REPO_DIR/lib/plan.sh"; confirmed_plan_hash "$TEST_DIR/projects/kept")"
 {
   printf '%s\tid1\t1 hour ago\t2GB\t\t\n' "$base_tag" go-yolo-base:debian-trixie
   printf 'go-yolo-base:debian-trixie-0ld0ba5e\tid0\t2 days ago\t2GB\t\t\n'

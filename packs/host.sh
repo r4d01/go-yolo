@@ -127,8 +127,9 @@ host_probe() {
     if [[ $method == skip ]]; then continue; fi
     case $kind in
       env)
-        # Values go-yolo sets itself are checked by their effect (time zone, go env, ...).
-        if [[ $flags == derived ]]; then continue; fi
+        # Values go-yolo sets itself are checked by their effect (time zone, go env, ...). (A probe
+        # runs in the container too, without go-yolo's helpers, so no has_flag here.)
+        if [[ ,$flags, == *,derived,* ]]; then continue; fi
         if [[ $value == sha256:* ]]; then
           printf 'env %s\tsha256:%s\n' "$name" "$(printf '%s' "${!name-}" | sha256sum | cut -c1-12)"
         else

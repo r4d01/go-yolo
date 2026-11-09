@@ -53,12 +53,26 @@ tool_path() {
     IFS=$'\t' read -r kind group method name value flags <<<"$line"
     [[ $method != skip ]] || continue
     case $kind in
-      toolchain) if [[ ,$flags, == *,on-path,* ]]; then dirs+=("$name/bin"); fi ;;
+      toolchain) if has_flag "$flags" on-path; then dirs+=("$name/bin"); fi ;;
       tools) dirs+=("$name") ;;
     esac
   done
   local IFS=:
   printf '%s' "${dirs[*]}"
+}
+
+# docker run -e arguments for the plan's env items: NAME=VALUE for values go-yolo works out
+# itself, otherwise NAME alone, so docker takes the value from the environment (and a secret
+# never appears on a command line).
+plan_env_args() {
+  local kind group method name value flags
+  while IFS=$'\t' read -r kind group method name value flags; do
+    if has_flag "$flags" derived; then
+      printf '%s\n' -e "$name=${value#-}"
+    else
+      printf '%s\n' -e "$name"
+    fi
+  done < <(plan_lines env env)
 }
 
 # GOYOLO_EXTRA_DOMAINS plus the plan's domain items, for --net allowlist.
