@@ -1,0 +1,65 @@
+# The sandbox proxy's config (see proxy/main.go). It is read again as soon as you save it; a file
+# that can't be read or parsed keeps the previous config.
+
+# The hosts the sandbox may reach, HTTP or HTTPS on any port. "*.example.com" means its
+# subdomains (quote it: a bare * means something else in YAML). Required, though it may be
+# empty; run.sh --net open ignores it and allows every public host.
+allow:
+  # Claude
+  - api.anthropic.com
+  - claude.ai
+  - claude.com
+  - platform.claude.com
+  # GitHub
+  - github.com
+  - api.github.com
+  - codeload.github.com
+  - objects.githubusercontent.com
+  - raw.githubusercontent.com
+  # Go modules
+  - proxy.golang.org
+  - sum.golang.org
+  - storage.googleapis.com
+  # Java (Maven / Gradle)
+  - repo.maven.apache.org
+  - repo1.maven.org
+  - services.gradle.org
+  - downloads.gradle.org
+  - plugins.gradle.org
+  - plugins-artifacts.gradle.org
+
+# Private addresses the sandbox may reach anyway: addresses or networks. Everything else private
+# (your LAN, the host's 127.0.0.1, a cloud metadata service) is always refused. A name that
+# resolves to one (nas.home) must also be in the allow list.
+lan: []
+#  - 192.168.1.20
+#  - 192.168.1.0/24
+
+# The AI providers' gateway: a request in the sandbox to http://127.0.0.1:3128/NAME/... goes to
+# upstream with these headers added (replacing any key the sandbox sent). $VAR comes from your
+# environment on the host; a provider with an unset one is left out. In the sandbox, key_env is a
+# dummy and base_url_env points at the gateway (leave it out if the agent has no such variable,
+# and set its base URL to http://127.0.0.1:3128/NAME yourself).
+providers:
+  anthropic:
+    upstream: https://api.anthropic.com
+    key_env: ANTHROPIC_API_KEY
+    base_url_env: ANTHROPIC_BASE_URL
+    headers:
+      x-api-key: $ANTHROPIC_API_KEY
+  openai:
+    upstream: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    base_url_env: OPENAI_BASE_URL
+    headers:
+      Authorization: Bearer $OPENAI_API_KEY
+  mistral:
+    upstream: https://api.mistral.ai/v1
+    key_env: MISTRAL_API_KEY
+    headers:
+      Authorization: Bearer $MISTRAL_API_KEY
+  xai:
+    upstream: https://api.x.ai/v1
+    key_env: XAI_API_KEY
+    headers:
+      Authorization: Bearer $XAI_API_KEY
