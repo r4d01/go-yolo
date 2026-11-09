@@ -2,7 +2,7 @@
 
 ## Status (2026-11-09, branch `feature/project-images`)
 
-**Done** (48 test groups, `tests/docker.sh` and shellcheck passing):
+**Done** (pushed, 48 test groups, `tests/docker.sh` and shellcheck passing):
 
 - Part 1: the launcher split into `lib/` modules, colors, `.go-yolo/` and the git-root rule, the
   plan with confirmation, base and project images, packages (never downgrading), CAs, locales,
@@ -13,7 +13,7 @@
 - Phase B (4.3): the setup picker (`--setup`, fzf or a numbered list) and the `mode catalog kind
   id` config; only picked items are planned; quieter confirmation (ask only on new exposure),
   plan summary, `--plan`, `[s]etup` at the prompt; the base image built without asking.
-- Phase C (4.4, not pushed yet): install from the source (3.12). Go from go.dev, Go tools with
+- Phase C (4.4): install from the source (3.12). Go from go.dev, Go tools with
   `go install` in a build stage, Temurin JDKs from Adoptium, Maven and Gradle from their release
   archives, each checked against the host's files; copies say why; the `copy` mode; `--parity`
   compares installed toolchains and tools file by file.
