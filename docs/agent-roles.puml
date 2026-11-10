@@ -1,0 +1,76 @@
+@startuml agent-roles
+title Recommended flow between the agents (~/.claude/agents)
+
+floating note left
+  The main session runs every agent and
+  relays its questions to the user;
+  agents never call each other.
+
+  **Commits** wait for the user's approval,
+  unless the user said "feel free to commit".
+  Only the user pushes.
+
+  **rubber-duck**: any time someone is stuck
+  (notes: docs/notes/rubber-duck.md).
+end note
+
+start
+
+partition "1. Vision" {
+  repeat
+    :**product-manager**: questions, then options and a pick
+    (memory: docs/VISION.draft.md, diagrams: docs/vision/);
+    :**user**: answers;
+    :**devils-advocate**: challenges the chosen direction;
+  repeat while (user agrees to the vision?) is (no) not (yes)
+  :**product-manager**: renames the draft to docs/VISION.md,
+  commits it once the user approves;
+}
+
+partition "2. Architecture" {
+  repeat
+    :**architect**: questions, then options and a pick
+    (memory: docs/ARCHITECTURE.draft.md, diagrams: docs/architecture/);
+    :**user**: answers;
+    :**devils-advocate**: challenges the design and the plan;
+  repeat while (user agrees to the architecture?) is (no) not (yes)
+  :**architect**: renames the draft to docs/ARCHITECTURE.md,
+  writes a plan file per step: docs/plans/NN-name.md (Status: todo),
+  commits them once the user approves;
+}
+
+partition "3. Each step (docs/plans/NN-name.md)" {
+  repeat
+    :**engineer**: creates the step's log, docs/plans/NN-name.log.md;
+    note right
+      The log is the step's shared memory: every
+      agent on the step reads it, and the ones that
+      write append an entry. It is never committed.
+    end note
+    repeat
+      :**engineer**: implements the step, or fixes the findings,
+      left uncommitted;
+      note right
+        If the step can't be done as planned,
+        the engineer stops and the **architect**
+        fixes the plan file first.
+      end note
+      :**tester**: writes and runs the tests,
+      updates docs/TESTING.md;
+      :**code-reviewer**: reviews the step's code and tests;
+    repeat while (findings or failing tests?) is (yes) not (no)
+    :**documenter**: README, developer docs, CHANGELOG.md,
+    docs/DESIGN.md (as built, with diagrams in docs/design/);
+    :**engineer**: once the user approves, marks the step done
+    (plan file Status, tick in ARCHITECTURE.md), makes one local
+    commit (code, tests, docs) and deletes the log;
+  repeat while (more steps?) is (yes) not (no)
+}
+
+partition "4. Before pushing" {
+  :**devils-advocate**: challenges the finished work;
+  :**user**: pushes;
+}
+
+stop
+@enduml
